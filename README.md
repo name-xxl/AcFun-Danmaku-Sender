@@ -24,7 +24,7 @@
 
 1. 安装浏览器扩展 [Tampermonkey](https://www.tampermonkey.net/)
 2. 点击 Tampermonkey 图标 → 添加新脚本
-3. 将 `acfun-danmaku-sender.user.js` 的内容粘贴进去
+3. 将 `acfun-danmaku-sender.user.js` 的内容粘贴进去（或拖入js文件）
 4. 保存（Ctrl+S）
 
 ## 使用
