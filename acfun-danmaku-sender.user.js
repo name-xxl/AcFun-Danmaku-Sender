@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AcFun 弹幕字幕发送器 (H5版高级弹幕)
 // @namespace    https://github.com/acfun-danmaku-sender
-// @version      6.0.0
+// @version      6.1.0
 // @description  上传 SRT/ASS/LRC 字幕文件，按时间轴自动发送高级弹幕。仿原生面板，替换 A 站高级弹幕编辑器并提供视频预览。
 // @author       Cherry Assistant
 // @match        *://www.acfun.cn/v/ac*
@@ -2781,7 +2781,7 @@
     // ============================================================
 
     function init() {
-        log('🚀 弹幕字幕发送器 v6.0.0 开始初始化');
+        log('🚀 弹幕字幕发送器 v6.1.0 开始初始化');
 
         const steps = [
             ['恢复预设', initPresets],
