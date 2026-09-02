@@ -240,8 +240,16 @@ POST https://www.acfun.cn/rest/pc-direct/new-danmaku/pollByPosition
 ```json
 [
   {
-    "from": { "pos": { "x": 50, "y": 85, "z": 1 } },
-    "to":   { "pos": { "x": 50, "y": 85, "z": 1 } },
+    "from": {
+      "pos":    { "x": 10, "y": 10, "z": 1 },
+      "scale":  { "x": 0.5, "y": 0.5, "z": 1 },
+      "rotate": { "x": 0, "y": 0, "z": -90 }
+    },
+    "to": {
+      "pos":    { "x": 50, "y": 50, "z": 1 },
+      "scale":  { "x": 1.5, "y": 1.5, "z": 1 },
+      "rotate": { "x": 0, "y": 0, "z": 0 }
+    },
     "timingFunction": "linear",
     "staticTime": 0,
     "moveTime": 3000
@@ -252,9 +260,15 @@ POST https://www.acfun.cn/rest/pc-direct/new-danmaku/pollByPosition
 | 字段 | 说明 |
 |---|---|
 | `from.pos` / `to.pos` | 起点/终点坐标，`x`/`y` 为**屏幕百分比**，`z` 固定 1 |
+| `from.scale` / `to.scale` | 起点/终点缩放，`x`/`y` 为**倍数**（1=100%），`z` 固定 1 |
+| `from.rotate` / `to.rotate` | 起点/终点旋转角度 `{x,y,z}`（度） |
 | `timingFunction` | 缓动函数（见[枚举](#六枚举与常量)） |
 | `staticTime` | 静止时间（ms） |
 | `moveTime` | 运动耗时（ms） |
+
+> **动画帧级 scale/rotate 缺失时回落顶层 `scale`/`rotate`**（渲染端 `getFrame` 对 pos+scale+rotate 三者一起插值）。
+>
+> ⚠️ **scale 是倍数不是百分比**：`1` = 100%、`2` = 200%。渲染端把 `scale.x` 直接当矩阵缩放因子用，填 `150` 是 150 倍而非 150%。A 站编辑器 UI 显示百分比，但发送前会 `/100` 转倍数。
 
 ---
 
@@ -304,7 +318,29 @@ POST https://www.acfun.cn/rest/pc-direct/new-danmaku/pollByPosition
 
 ### 缓动函数 `timingFunction`
 
-`none`、`linear`、`quadEaseIn`、`quadEaseOut`、`quadEaseInOut`、`cubicEaseIn`、`cubicEaseOut`、`cubicEaseInOut`、`quartEaseIn`（等 Easing 系列）。
+⚠️ **关键限制**：播放器默认使用 **DOM_CSS 渲染器**（`renderType` 枚举默认 `DOM_CSS`），它把 `timingFunction` **原样拼进 CSS `animation` 简写**，因此**只有 CSS 合法值才生效**：
+
+- 标准关键字：`linear`、`ease-in`、`ease-out`、`ease-in-out`；
+- 自定义曲线：`cubic-bezier(x1,y1,x2,y2)`。
+
+```js
+// 渲染器源码（DOM_CSS 路径）：
+h.push("... "+moveTime+"ms "+timingFunction)   // 直接进 animation 简写
+```
+
+> ⚠️ 反编译源码里虽有 30 种缓动 key（`quadEaseIn`/`elasticEaseOut` 等，来自 `Su` 表），但它们只在 **Canvas 渲染器**的 `getFrame` 里被查表使用；默认 DOM_CSS 路径下写这些 key 会导致整条 `animation` 非法、**弹幕停在 (0,0) 不动**。A 站编辑器发送时实际写死 `linear`。
+>
+> 脚本侧已把缓动全部转成 CSS 合法值（标准关键字 + cubic-bezier 近似），下表是常用对应：
+
+| 语义 | CSS 合法值 |
+|---|---|
+| 匀速 | `linear` |
+| 标准缓入/缓出/缓入缓出 | `ease-in` / `ease-out` / `ease-in-out` |
+| 二次·缓入（quad easeIn） | `cubic-bezier(0.55,0.085,0.68,0.53)` |
+| 二次·缓出（quad easeOut） | `cubic-bezier(0.25,0.46,0.45,0.94)` |
+| 三次·缓入（cubic easeIn） | `cubic-bezier(0.55,0.055,0.675,0.19)` |
+| 三次·缓出（cubic easeOut） | `cubic-bezier(0.215,0.61,0.355,1)` |
+| 回退·缓出（back easeOut，有超调） | `cubic-bezier(0.175,0.885,0.32,1.275)` |
 
 ---
 
@@ -367,6 +403,24 @@ POST https://www.acfun.cn/rest/pc-direct/new-danmaku/pollByPosition
 
 高级弹幕渲染器（`DanmakuGRenderer`）的实例由播放器内部持有，未暴露到 `window`。其关键行为：
 
+### 渲染器初始化
+
+- 渲染器不是自动创建的，要等播放器调用 `initAdvancedDanmaku()`（内部 `new DanmakuGRenderer(...)`）后才存在；
+- `loadDanmakuG` 方法在插件挂载时就绑到 `window.player` 上、**永远存在**，但它内部是 `r.renderer.addDanmaku(t)`——若 `r.renderer` 未初始化，调用会抛 `TypeError`；
+- 判断渲染器是否就绪：检测 DOM 里是否出现 `.danmaku-g-rendered-stage`（渲染器创建后才注入）；无则先调 `player.initAdvancedDanmaku()`（无参调用只建渲染器、不弹面板）。
+
+### 渲染引擎类型（DOM_CSS / DOM / Canvas）
+
+`getEngine` 按 `renderType` 三选一，**默认 `DOM_CSS`**（`Mp={renderType:DanmakuGRenderType.DOM_CSS}`）：
+
+| 引擎 | 运动实现 | timingFunction 处理 |
+|---|---|---|
+| `DOM_CSS`（默认） | CSS `animation` / keyframes | 原样进 `animation` 简写 → **只认 CSS 合法值** |
+| `DOM` | JS 逐帧 tick | 走 `Su` 缓动表 |
+| `Canvas` | canvas 矩阵绘制 | 走 `Su` 缓动表 |
+
+> 当前线上默认走 DOM_CSS，所以 `timingFunction` 必须是 CSS 合法值（见[第六节](#六枚举与常量)）。
+
 ### addDanmaku（正式池，预览/发送本地渲染都走这里）
 
 - `loadDanmakuG(models)` 最终调用 `renderer.addDanmaku(models)`；
@@ -378,6 +432,19 @@ POST https://www.acfun.cn/rest/pc-direct/new-danmaku/pollByPosition
   - 同一条弹幕（内容相同）第二次注入会被拦截、不渲染；
   - 绕过方法：给 model 加一个**递增的无害字段**（如 `__seq`），使 JSON 指纹每次不同；
   - 预览残留无法按 id 删除，只能让旧 model「过期」（`startTime` 设为极大值）或刷新页面清池。
+
+### 「只看自己」过滤器（重要）
+
+打开高级弹幕面板时，A 站会开启一个过滤器 `IsOwnDanmkau`：
+
+```js
+renderer.emit(FilterChanged, { key:'IsOwnDanmkau', enable:viewOwnDanmaku, func: t => g.uid === t.user })
+```
+
+- `needRender` 时若过滤器启用，只有 `g.uid === t.user` 的弹幕才会渲染；
+- `g.uid` 来自 cookie `auth_key`（**字符串**），比较用 `===` 严格相等；
+- **本地注入的预览弹幕必须自带 `user` 字段（=当前 uid）**，否则面板打开时被拦下（表现为「开面板不显示、关面板显示」）；
+- 服务器拉回来的弹幕 `user` 由服务端填好，不受影响。
 
 ### preview（原生预览通道，未暴露）
 
@@ -391,7 +458,7 @@ POST https://www.acfun.cn/rest/pc-direct/new-danmaku/pollByPosition
 
 - `addDanmaku` 依赖渲染器主 tick 的内部时间 `_time` 与弹幕 `startTime` 对齐；
 - `seek` 是异步的，立即注入会因时间未同步而「窗口外不渲染」；
-- 经验做法：`seek` 后延迟约 600ms 再注入。
+- 经验做法：**先 `pause` → `seek` 到 startTime 之前留余量 → 注入 → `play`**，避免短视频（时长小于注入延迟）被时钟越过窗口而漏画。
 
 ---
 
