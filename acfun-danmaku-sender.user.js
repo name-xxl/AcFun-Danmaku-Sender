@@ -2,7 +2,7 @@
 // @name         AcFun 弹幕字幕发送器 (H5版高级弹幕)
 // @namespace    https://github.com/acfun-danmaku-sender
 // @version      6.0.0
-// @description  上传 SRT/ASS 字幕文件，按时间轴自动发送高级弹幕。仿原生面板，替换 A 站高级弹幕编辑器并提供视频预览。
+// @description  上传 SRT/ASS/LRC 字幕文件，按时间轴自动发送高级弹幕。仿原生面板，替换 A 站高级弹幕编辑器并提供视频预览。
 // @author       Cherry Assistant
 // @match        *://www.acfun.cn/v/ac*
 // @match        *://www.acfun.cn/bangumi/aa*
@@ -261,7 +261,35 @@
         return 0xffffff;
     }
 
+    // LRC 歌词解析：支持 [mm:ss.xx] 和 [mm:ss.xxx] 时间标签，
+    // 一行多个时间标签会展开成多条；无结束时间，靠相邻行时间差反推（由 calcDurationMs 处理）
+    function parseLRC(t) {
+        t = t.replace(/^﻿/, '');
+        const out = [];
+        for (const raw of t.split('\n')) {
+            const line = raw.trim();
+            if (!line) continue;
+            // 匹配所有 [mm:ss.xx] / [mm:ss.xxx] 时间标签
+            const tags = [...line.matchAll(/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g)];
+            if (!tags.length) continue;
+            const text = line.replace(/\[[^\]]*\]/g, '').trim();
+            if (!text) continue;
+            for (const tag of tags) {
+                const mm = parseInt(tag[1], 10);
+                const ss = parseInt(tag[2], 10);
+                let frac = tag[3] || '0';
+                // 两位小数（如 .5）当作 500ms，三位小数当作毫秒
+                if (frac.length === 1) frac += '00';
+                else if (frac.length === 2) frac += '0';
+                const ms = mm * 60000 + ss * 1000 + parseInt(frac.slice(0, 3), 10);
+                out.push({ time: ms, text });
+            }
+        }
+        return out.sort((a, b) => a.time - b.time);
+    }
+
     function parseSub(text, name) {
+        if (/\.lrc$/i.test(name)) return parseLRC(text);
         if (/\.ass[ai]?$/i.test(name)) return parseASSWithStyles(text);
         return parseSRT(text);
     }
@@ -1036,9 +1064,9 @@
                 <div class="cf-drop" id="cf-drop">
                     <div class="cf-drop-icon">📂</div>
                     <div><b>点击上传</b> 或拖放字幕</div>
-                    <div class="cf-drop-hint">SRT / ASS</div>
+                    <div class="cf-drop-hint">SRT / ASS / LRC</div>
                 </div>
-                <input type="file" id="cf-file" accept=".srt,.ass,.ssa" style="display:none">
+                <input type="file" id="cf-file" accept=".srt,.ass,.ssa,.lrc" style="display:none">
             </div>
 
             <div class="cf-sec">
@@ -1076,7 +1104,7 @@
                         <label>第二语言</label>
                         <span class="cf-sub2-btn" id="cf-sub2-btn">📂 上传对照字幕</span>
                         <span class="cf-sub2-hint" id="cf-sub2-hint">未上传</span>
-                        <input type="file" id="cf-sub2-file" accept=".srt,.ass,.ssa" style="display:none">
+                        <input type="file" id="cf-sub2-file" accept=".srt,.ass,.ssa,.lrc" style="display:none">
                     </div>
                 </div>
             </div>
