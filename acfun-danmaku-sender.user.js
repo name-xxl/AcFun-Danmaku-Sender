@@ -263,29 +263,55 @@
 
     // LRC 歌词解析：支持 [mm:ss.xx] 和 [mm:ss.xxx] 时间标签，
     // 一行多个时间标签会展开成多条；无结束时间，靠相邻行时间差反推（由 calcDurationMs 处理）
+    // 双语支持：同一行用 / 或 | 分隔，或同一时间戳相邻两行，会拆成 main / sub 两个字段
     function parseLRC(t) {
         t = t.replace(/^﻿/, '');
-        const out = [];
-        for (const raw of t.split('\n')) {
-            const line = raw.trim();
-            if (!line) continue;
-            // 匹配所有 [mm:ss.xx] / [mm:ss.xxx] 时间标签
-            const tags = [...line.matchAll(/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g)];
+        const raw = [];
+        for (const line of t.split('\n')) {
+            const l = line.trim();
+            if (!l) continue;
+            const tags = [...l.matchAll(/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g)];
             if (!tags.length) continue;
-            const text = line.replace(/\[[^\]]*\]/g, '').trim();
+            const text = l.replace(/\[[^\]]*\]/g, '').trim();
             if (!text) continue;
             for (const tag of tags) {
                 const mm = parseInt(tag[1], 10);
                 const ss = parseInt(tag[2], 10);
                 let frac = tag[3] || '0';
-                // 两位小数（如 .5）当作 500ms，三位小数当作毫秒
                 if (frac.length === 1) frac += '00';
                 else if (frac.length === 2) frac += '0';
                 const ms = mm * 60000 + ss * 1000 + parseInt(frac.slice(0, 3), 10);
-                out.push({ time: ms, text });
+                raw.push({ time: ms, text });
             }
         }
-        return out.sort((a, b) => a.time - b.time);
+        raw.sort((a, b) => a.time - b.time);
+
+        // 1) 同一行内 / 或 | 分隔的双语，拆成 main / sub
+        const out = [];
+        for (const r of raw) {
+            const parts = r.text.split(/\s*[/|]\s*/).filter((s) => s.trim());
+            if (parts.length === 2) {
+                out.push({ time: r.time, text: parts[0] + ' / ' + parts[1], main: parts[0], sub: parts[1] });
+            } else {
+                out.push({ time: r.time, text: r.text });
+            }
+        }
+
+        // 2) 同一时间戳相邻两行（中文一行、外文一行），配对成 main / sub
+        const merged = [];
+        let i = 0;
+        while (i < out.length) {
+            const cur = out[i];
+            const next = out[i + 1];
+            if (cur.main == null && cur.sub == null && next && next.main == null && next.sub == null && next.time === cur.time) {
+                merged.push({ time: cur.time, text: cur.text + ' / ' + next.text, main: cur.text, sub: next.text });
+                i += 2;
+            } else {
+                merged.push(cur);
+                i += 1;
+            }
+        }
+        return merged;
     }
 
     function parseSub(text, name) {
@@ -388,6 +414,8 @@
             preset.options = Object.assign({}, preset.options || {}, saved);
         }
     }
+    // 双语 LRC 处理方式：'auto' 自动上下两行 | 'main' 仅主语言 | 'sub' 仅副语言
+    let bilingualMode = storeGet('bilingualMode', 'auto');
     // 发送间隔（ms）：两条弹幕发送之间的等待时间，可自定义
     let sendInterval = parseInt(storeGet('sendInterval', '400'), 10) || 0;
     // 发送格式：'new' = 新版 extData（wordStyle/animationFrames）；'legacy' = 旧版 extData（n/l/p/z/w）
@@ -512,6 +540,21 @@
         return buildModel({ time: timeMs, text: text }, cfg, durationMs);
     }
 
+    // 智能分词：中文/全角符号按单字拆，英文/数字连续串按整词拆。
+    // 返回 [{ text, w }]，w 为宽度权重（中文=1，英文按字符数×0.55），
+    // 用于 KTV / 声明式引擎按“实际宽度”累加 X，避免英文按字母拆、间距不均。
+    function tokenize(text) {
+        const out = [];
+        const re = /[一-鿿　-〿＀-￯]|[A-Za-z0-9]+|[^\s]/g;
+        let m;
+        while ((m = re.exec(text))) {
+            const t = m[0];
+            const isAsciiWord = /^[A-Za-z0-9]+$/.test(t);
+            out.push({ text: t, w: isAsciiWord ? t.length * 0.55 : 1 });
+        }
+        return out;
+    }
+
     const TRANSFORMS = {
         // 竖排：拆单字纵向堆叠
         'chars-vertical'(sub, cfg, dur, o) {
@@ -537,16 +580,15 @@
         // 双排时：本句暗色层提前到「上一句开始时间」出现（覆盖上一句+本句），
         // 亮色层从本句开始扫光——形成“上一句在唱、下一句在下面等着”的卡拉OK效果。
         'chars-karaoke'(sub, cfg, dur, o, seq, prevTime) {
-            const chars = Array.from((sub.text || '').trim());
-            if (!chars.length) return [];
+            const tokens = tokenize((sub.text || '').trim());
+            if (!tokens.length) return [];
             const cw = num(o.charWidth, 2.8);
             const sung = o.sungColor || '#ffd700';
             const unsung = o.unsungColor || '#9aa0a6';
-            const perChar = Math.max(120, dur / chars.length);
+            const perToken = Math.max(120, dur / tokens.length);
 
             const layout = o.layout || 'single';
             const isDual = layout === 'dual';
-            // 单排用 startX；双排上下行各用独立的起点 X
             let startX = num(o.startX, 8);
             let rowY = num(o.rowY, 78);
             if (isDual) {
@@ -559,8 +601,6 @@
                 startX = isOdd ? startXTop : startXBottom;
             }
 
-            // 暗色层的时间起点与时长：
-            // 双排且存在上一句时，从上一句开始就铺开（提前预览下一句），持续到本句结束
             let baseStart = sub.time;
             let baseDur = dur;
             if (isDual && prevTime != null && prevTime < sub.time) {
@@ -568,24 +608,27 @@
                 baseDur = Math.round(dur + (sub.time - prevTime));
             }
 
+            // 按实际宽度累加 X（英文词按字符数加权），避免中英间距不均
+            const xs = [];
+            let acc = 0;
+            for (const t of tokens) { xs.push(startX + acc); acc += t.w * cw; }
+
             const out = [];
-            // 底层：全部暗色
-            chars.forEach((ch, i) => {
+            tokens.forEach((tk, i) => {
                 const c = Object.assign({}, cfg);
-                c.posX = startX + i * cw;
+                c.posX = xs[i];
                 c.posY = rowY;
                 c.color = hexToRgb(unsung);
-                out.push(modelFrom(c, ch, baseStart, baseDur));
+                out.push(modelFrom(c, tk.text, baseStart, baseDur));
             });
-            // 亮层：逐字扫光，从本句开始
-            chars.forEach((ch, i) => {
+            tokens.forEach((tk, i) => {
                 const c = Object.assign({}, cfg);
-                c.posX = startX + i * cw;
+                c.posX = xs[i];
                 c.posY = rowY;
                 c.color = hexToRgb(sung);
-                const t = sub.time + Math.round(i * perChar);
-                const remain = Math.max(200, Math.round(dur - i * perChar));
-                out.push(modelFrom(c, ch, t, remain));
+                const t = sub.time + Math.round(i * perToken);
+                const remain = Math.max(200, Math.round(dur - i * perToken));
+                out.push(modelFrom(c, tk.text, t, remain));
             });
             return out;
         },
@@ -627,11 +670,18 @@
             const rules = o || {};
             const text = (sub.text || '').trim();
             let pieces = [];
+            let weights = null;
             switch (rules.split) {
                 case 'words': pieces = text.split(/\s+/).filter(Boolean); break;
                 case 'lines': pieces = text.split(/\n/).filter(Boolean); break;
                 case 'none': pieces = [text]; break;
-                case 'chars': default: pieces = Array.from(text); break;
+                case 'chars': default: {
+                    // 智能分词：中文按字、英文按词，并带宽度权重
+                    const toks = tokenize(text);
+                    pieces = toks.map((t) => t.text);
+                    weights = toks.map((t) => t.w);
+                    break;
+                }
             }
             if (!pieces.length) return [];
 
@@ -647,13 +697,23 @@
             const hl = rules.highlight || {};
             const hlOn = !!hl.enabled;
 
-            // 计算每个片段在网格中的行列与位置
+            // 计算每个片段在网格中的行列与位置；智能分词时横向按宽度权重累加
             const place = (i) => {
                 let r, c;
                 if (flow === 'col-first') { r = i % rows; c = Math.floor(i / rows); }
                 else { c = i % columns; r = Math.floor(i / columns); }
+                let x;
+                if (weights && flow === 'row-first') {
+                    // row-first：该行内前 c 个 token 的宽度累计 × 间距
+                    const rowStart = r * columns;
+                    let acc = 0;
+                    for (let k = rowStart; k < i; k++) acc += weights[k];
+                    x = bx + acc * sx;
+                } else {
+                    x = bx + c * sx;
+                }
                 return {
-                    x: clamp(bx + c * sx, 0, 100),
+                    x: clamp(x, 0, 100),
                     y: clamp(by + r * sy, 0, 100),
                     t: sub.time + Math.round(i * st),
                 };
@@ -681,7 +741,6 @@
                 const c = Object.assign({}, cfg);
                 c.posX = pos.x; c.posY = pos.y; c.color = mainColor;
                 if (hlOn) {
-                    // 高亮扫光：从该片段时间开始，持续到句尾
                     const remain = Math.max(200, Math.round(dur - i * st));
                     out.push(modelFrom(c, p, pos.t, remain));
                 } else {
@@ -707,6 +766,16 @@
     // seq 为该字幕在选中序列里的序号（从 1 起，供双排等跨句布局使用）
     // prevTime 为上一句的开始时间（ms），供双排 KTV 让下一句暗色层提前出现
     function expandSub(sub, cfg, durationMs, seq, prevTime) {
+        // 双语 LRC：根据 bilingualMode 先归一化文本
+        if (sub && sub.main != null && sub.sub != null) {
+            if (bilingualMode === 'main' || bilingualMode === 'sub') {
+                const text = bilingualMode === 'sub' ? sub.sub : sub.main;
+                sub = Object.assign({}, sub, { text, main: null, sub: null });
+            } else { // auto：上下两行
+                return expandBilingual(sub, cfg, durationMs);
+            }
+        }
+
         const preset = getActivePreset();
         if (!preset || preset.transform === 'none' || !TRANSFORMS[preset.transform]) {
             return [buildModel(sub, cfg, durationMs)];
@@ -718,6 +787,19 @@
             log('预设展开失败，回退原样', e);
             return [buildModel(sub, cfg, durationMs)];
         }
+    }
+
+    // 双语 LRC：主语言在上、副语言在下，副语言用金色区分
+    function expandBilingual(sub, cfg, durationMs) {
+        const baseY = num(cfg.posY, 72);
+        const mainCfg = Object.assign({}, cfg);
+        mainCfg.posY = clamp(baseY, 1, 94);
+        const subCfg = Object.assign({}, cfg);
+        subCfg.posY = clamp(baseY + 5, 1, 99);
+        subCfg.color = 0xffd700;
+        const m1 = buildModel({ time: sub.time, text: sub.main }, mainCfg, durationMs);
+        const m2 = buildModel({ time: sub.time, text: sub.sub }, subCfg, durationMs);
+        return [m1, m2];
     }
 
     function calcDurationMs(idx) {
@@ -1067,6 +1149,14 @@
                     <div class="cf-drop-hint">SRT / ASS / LRC</div>
                 </div>
                 <input type="file" id="cf-file" accept=".srt,.ass,.ssa,.lrc" style="display:none">
+                <div class="cf-row" id="cf-bilingual-row" style="display:none;margin-top:8px">
+                    <label>双语LRC</label>
+                    <select id="cf-bilingual-mode">
+                        <option value="auto"${bilingualMode === 'auto' ? ' selected' : ''}>自动上下两行</option>
+                        <option value="main"${bilingualMode === 'main' ? ' selected' : ''}>仅主语言</option>
+                        <option value="sub"${bilingualMode === 'sub' ? ' selected' : ''}>仅副语言</option>
+                    </select>
+                </div>
             </div>
 
             <div class="cf-sec">
@@ -1229,8 +1319,12 @@
                 subs = parseSub(r.result, file.name);
                 if (!subs.length) throw new Error('未解析到字幕');
                 subs.forEach((s) => { s.st = ''; s.selected = true; });   // 默认全选
+                // 检测双语 LRC，有则显示处理方式下拉
+                const hasBilingual = subs.some((s) => s.main != null && s.sub != null);
+                const bRow = $('#cf-bilingual-row');
+                if (bRow) bRow.style.display = hasBilingual ? '' : 'none';
                 renderList();
-                status(`📂 ${file.name} · ${subs.length} 条（已全选）`, 'ok');
+                status(`📂 ${file.name} · ${subs.length} 条${hasBilingual ? '（检测到双语）' : ''}`, 'ok');
             } catch (e) {
                 status('解析失败: ' + e.message, 'err');
             }
@@ -1714,6 +1808,13 @@
             if (!cell) return;
             currentStyleConfig.anchor = +cell.dataset.v;
             $$('.cf-anchor-cell', $('#cf-anchor')).forEach((c) => c.classList.toggle('sel', c === cell));
+        });
+
+        // 双语 LRC 处理方式
+        $('#cf-bilingual-mode').addEventListener('change', (e) => {
+            bilingualMode = e.target.value;
+            storeSet('bilingualMode', bilingualMode);
+            status(`双语处理：${e.target.value === 'auto' ? '自动上下两行' : (e.target.value === 'main' ? '仅主语言' : '仅副语言')}`, 'ok');
         });
 
         // 列表点击：复选框切换选中；点其他区域预览该条
