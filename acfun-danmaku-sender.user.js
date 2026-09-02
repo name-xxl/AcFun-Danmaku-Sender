@@ -131,6 +131,20 @@
         }
         cur[keys[keys.length - 1]] = val;
     }
+
+    // 定位 param.key 的真实读写目标：
+    //   key 以 'effects.' 开头 → 目标根是 preset.effects（高级样式/运动）
+    //   否则              → 目标根是 preset.options（排版参数）
+    // 直接返回对真实对象的引用，保证 getByPath/setByPath 读写落到 preset 本体，
+    // 而不是某个浅拷贝副本（否则改动不生效——曾导致“参数改了但间距/颜色没反应”）。
+    function paramTarget(preset, key) {
+        if (key && key.indexOf('effects.') === 0) {
+            if (!preset.effects || typeof preset.effects !== 'object') preset.effects = {};
+            return { root: preset.effects, path: key.slice('effects.'.length) };
+        }
+        if (!preset.options || typeof preset.options !== 'object') preset.options = {};
+        return { root: preset.options, path: key };
+    }
     const $ = (sel, root) => (root || document).querySelector(sel);
     const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -393,7 +407,8 @@
     let timeOffsetBackup = 0;   // 进入切片模式前的手动偏移值，退出时恢复
     // 预设相关
     let customPresets = [];      // 导入的自定义预设
-    let activePresetId = storeGet('activePresetId', 'none'); // 当前激活预设 id
+    // 预设选择不记忆：每次刷新/打开默认回到「无预设」，避免误用上次的效果
+    let activePresetId = 'none';
     let subs2 = [];              // 第二语言字幕（多语预设用）
 
     // —— 预设参数持久化（主动保存：点「保存参数」才写，不自动存）——
@@ -418,12 +433,12 @@
     let bilingualMode = storeGet('bilingualMode', 'auto');
     // 发送间隔（ms）：两条弹幕发送之间的等待时间，可自定义
     let sendInterval = parseInt(storeGet('sendInterval', '400'), 10) || 0;
-    // 发送格式：'new' = 新版 extData（wordStyle/animationFrames）；'legacy' = 旧版 extData（n/l/p/z/w）
-    let sendFormat = storeGet('sendFormat', 'new');
     // 字幕列表是否折叠
     let listFolded = false;
     // 预设区是否折叠
     let presetFolded = false;
+    // 样式区是否折叠
+    let styleFolded = false;
     // 预览（全部）是否已暂停
     let previewPaused = false;
     let currentStyleConfig = {
@@ -438,6 +453,75 @@
         moveTime: 3000,           // 运动耗时 ms
         shadow: false,
     };
+
+    // 高级字段（A 站原生高级弹幕的完整可定义字段，弹幕模式可调、可导出预设）
+    let advancedConfig = {
+        zIndex: 50,
+        rotate: { x: 0, y: 0, z: 0 },          // 旋转角度（度）
+        scale: { x: 1, y: 1, z: 1 },           // 缩放比例（1=100%）
+        blur: 0,                                // 高斯模糊 px
+        shine: null,                            // 外发光 { color, blur, size } 或 null
+        shadow: null,                           // 投影 { x, y, color, blur } 或 null
+        // 多段运动：每段 { fromX/fromY/toX/toY, fromScaleX/.../toRotateZ, moveTime, timingFunction }
+        // 坐标/缩放/旋转/耗时默认全 null，含义：
+        //   坐标 null   → 跟随样式区/预设位置（cfg.posX/posY）
+        //   缩放/旋转 null → 跟随顶层 scale/rotate（弹幕本体级拉伸旋转）
+        //   moveTime null → 跟随该弹幕 durationMs（transform 可为每段算时长，如 KTV 逐字递减）
+        // 显式数字才固定。默认全 null，让竖排/KTV/声明式等 transform 的定位、时长、变换都正常生效。
+        moves: [
+            {
+                fromX: null, fromY: null, toX: null, toY: null,
+                fromScaleX: null, fromScaleY: null, toScaleX: null, toScaleY: null,
+                fromRotateX: null, fromRotateY: null, fromRotateZ: null,
+                toRotateX: null, toRotateY: null, toRotateZ: null,
+                moveTime: null, timingFunction: 'linear',
+            },
+        ],
+    };
+
+    // ============================================================
+    //  可调字段定义表：导出「高级弹幕预设」时勾选哪些字段进入 params 声明。
+    //  key 用点路径指向 effects 的叶子字段（导入后 renderPresetParams 据此读写）。
+    //  default 兜底：effects 里某子对象为 null 时，控件显示默认值。
+    // ============================================================
+    const ADJUSTABLE_FIELDS = [
+        { key: 'effects.zIndex', label: '层级', group: '层级', type: 'number', min: 1, max: 99, step: 1, default: 50 },
+        { key: 'effects.rotate.x', label: '旋转 X°', group: '旋转', type: 'number', min: -360, max: 360, step: 1, default: 0 },
+        { key: 'effects.rotate.y', label: '旋转 Y°', group: '旋转', type: 'number', min: -360, max: 360, step: 1, default: 0 },
+        { key: 'effects.rotate.z', label: '旋转 Z°', group: '旋转', type: 'number', min: -360, max: 360, step: 1, default: 0 },
+        { key: 'effects.scale.x', label: '缩放 X', group: '缩放', type: 'number', min: 0.1, max: 5, step: 0.1, default: 1 },
+        { key: 'effects.scale.y', label: '缩放 Y', group: '缩放', type: 'number', min: 0.1, max: 5, step: 0.1, default: 1 },
+        { key: 'effects.blur', label: '模糊(px)', group: '模糊', type: 'number', min: 0, max: 50, step: 0.5, default: 0 },
+        { key: 'effects.shadow.x', label: '投影 X', group: '投影', type: 'number', min: -100, max: 100, step: 1, default: 1 },
+        { key: 'effects.shadow.y', label: '投影 Y', group: '投影', type: 'number', min: -100, max: 100, step: 1, default: 1 },
+        { key: 'effects.shadow.blur', label: '投影模糊', group: '投影', type: 'number', min: 0, max: 50, step: 0.5, default: 3 },
+        { key: 'effects.shadow.color', label: '投影色', group: '投影', type: 'color', default: '#000000' },
+        { key: 'effects.shine.blur', label: '发光模糊', group: '外发光', type: 'number', min: 0, max: 50, step: 0.5, default: 5 },
+        { key: 'effects.shine.size', label: '发光大小', group: '外发光', type: 'number', min: 0, max: 20, step: 0.5, default: 2 },
+        { key: 'effects.shine.color', label: '发光色', group: '外发光', type: 'color', default: '#ffd700' },
+    ];
+
+    // 激活预设带 effects 时，覆盖 advancedConfig；否则用编辑器当前值。
+    // 解析规则集中在 buildModel 一处（resolveEffects），避免散落判断。
+    let activePresetEffects = null;
+
+    // 规范化 effects：补齐缺失字段，保证 buildModel 访问安全
+    function normalizeEffects(ef) {
+        const src = ef || {};
+        return {
+            zIndex: (src.zIndex != null) ? src.zIndex : 50,
+            rotate: { x: num(src.rotate && src.rotate.x, 0), y: num(src.rotate && src.rotate.y, 0), z: num(src.rotate && src.rotate.z, 0) },
+            scale: { x: num(src.scale && src.scale.x, 1), y: num(src.scale && src.scale.y, 1), z: 1 },
+            blur: num(src.blur, 0),
+            shine: src.shine || null,
+            shadow: src.shadow || null,
+            moves: (src.moves && src.moves.length) ? src.moves : advancedConfig.moves,
+        };
+    }
+
+    function resolveEffects() {
+        return normalizeEffects(activePresetEffects || advancedConfig);
+    }
 
     // ============================================================
     //  模型构造（与 A 站原生 getData 完全一致）
@@ -457,17 +541,43 @@
             stroke: cfg.stroke !== false,
             color: rgbToHex(cfg.color),
         };
-        if (cfg.shadow) {
+        const adv = resolveEffects();
+
+        // 简单投影（旧字段，向后兼容）：未在高级字段里配置投影时才启用
+        if (cfg.shadow && !adv.shadow) {
             wordStyle.shadow = { x: 1, y: 1, color: '#000000', blur: 3 };
         }
 
-        const frame = {
-            from: { pos: { x: num(cfg.posX, 50), y: num(cfg.posY, 85), z: 1 } },
-            to: { pos: { x: num(cfg.posX, 50), y: num(cfg.posY, 85), z: 1 } },
-            timingFunction: 'linear',
-            staticTime: 0,
-            moveTime: moveTime,
-        };
+        // 高级字段：模糊 / 外发光 / 投影（覆盖简单投影）
+        if (adv.blur > 0) wordStyle.blur = adv.blur;
+        if (adv.shine) wordStyle.shine = { color: adv.shine.color, blur: adv.shine.blur, size: adv.shine.size };
+        if (adv.shadow) wordStyle.shadow = { x: adv.shadow.x, y: adv.shadow.y, color: adv.shadow.color, blur: adv.shadow.blur };
+
+        // 多段运动：坐标 null 时回落到 cfg.posX/posY（跟随样式区/预设定位），
+        // 显式数字才用固定坐标。这样竖排/KTV/声明式等 transform 通过 cfg 传递的
+        // 位置才能真正生效，而不是被默认 50,85 固定运动钉死在同一点。
+        const moves = (adv.moves && adv.moves.length) ? adv.moves : [{ fromX: null, fromY: null, toX: null, toY: null, moveTime: null, timingFunction: 'linear' }];
+        const animationFrames = moves.map((mv) => {
+            // 动画帧级 scale/rotate：空(null/undefined/'') → 回落顶层 adv.scale/adv.rotate，
+            // 显式数字才用该段自己的拉伸/旋转（与 A 站渲染器 drawDanmakuFrame 语义一致）
+            const frame = (sx, sy, rx, ry, rz, px, py) => ({
+                pos: { x: px, y: py, z: 1 },
+                scale: { x: num(sx, adv.scale.x), y: num(sy, adv.scale.y), z: 1 },
+                rotate: { x: num(rx, adv.rotate.x), y: num(ry, adv.rotate.y), z: num(rz, adv.rotate.z) },
+            });
+            return {
+                from: frame(mv.fromScaleX, mv.fromScaleY, mv.fromRotateX, mv.fromRotateY, mv.fromRotateZ,
+                    num(mv.fromX, num(cfg.posX, 50)), num(mv.fromY, num(cfg.posY, 85))),
+                to: frame(mv.toScaleX, mv.toScaleY, mv.toRotateX, mv.toRotateY, mv.toRotateZ,
+                    num(mv.toX, num(cfg.posX, 50)), num(mv.toY, num(cfg.posY, 85))),
+                timingFunction: mv.timingFunction || 'linear',
+                staticTime: 0,
+                // moveTime 空(null/undefined/''）→ 跟随 durationMs；显式数字才固定耗时
+                moveTime: Math.max(100, Math.round(num(mv.moveTime, moveTime))),
+            };
+        });
+        // 总时长 = 所有段 moveTime 之和
+        const totalDur = animationFrames.reduce((a, f) => a + f.moveTime, 0);
 
         return {
             id: genId(),
@@ -475,13 +585,13 @@
             contentType: 0,                    // Text
             startTime: startTime,
             startTimeNow: false,
-            zIndex: 50,
+            zIndex: clamp(adv.zIndex, 1, 99),
             anchor: clamp(cfg.anchor, 0, 8),
             wordStyle: wordStyle,
-            animationFrames: [frame],
-            durationTime: moveTime,
-            rotate: { x: 0, y: 0, z: 0 },
-            scale: { x: 1, y: 1, z: 1 },
+            animationFrames: animationFrames,
+            durationTime: totalDur || moveTime,
+            rotate: { x: num(adv.rotate.x, 0), y: num(adv.rotate.y, 0), z: num(adv.rotate.z, 0) },
+            scale: { x: num(adv.scale.x, 1), y: num(adv.scale.y, 1), z: num(adv.scale.z, 1) },
         };
     }
 
@@ -489,37 +599,9 @@
         return FONTS.includes(f) ? f : (f === 'KaiTi' || f === 'FangSong' ? 'FangSong' : 'SimHei');
     }
     function clamp(n, lo, hi) { n = +n || 0; return n < lo ? lo : n > hi ? hi : n; }
-    function num(n, d) { n = +n; return isFinite(n) ? n : d; }
-
-    // 旧版 advancedDanmakuExtData 格式（远古老物：n/l/p/z/rx/k/...），
-    // 仅用于「发送格式=legacy」时对比测试，确认播放器渲染端到底认哪种格式。
-    function buildLegacyExtData(model) {
-        const ws = model.wordStyle || {};
-        const frame = (model.animationFrames && model.animationFrames[0]) || {};
-        const from = frame.from || { pos: {} };
-        const to = frame.to || { pos: {} };
-        return {
-            n: model.content,
-            l: Math.round(model.durationTime / 1000),
-            p: `${Math.round(from.pos.x) * 1000},${Math.round(from.pos.y) * 1000},${ws.size || 24},${parseInt((ws.color || '#ffffff').slice(1), 16) || 16777215},123456789`,
-            pz: 1,
-            rx: 0, k: 0, r: 0, e: 0, f: 0, sz: 0,
-            c: model.anchor,
-            z: [{
-                l: Math.round(model.durationTime),
-                x: Math.round(to.pos.x) * 1000,
-                y: Math.round(to.pos.y) * 1000,
-                z: 0, rx: 0, e: 0, d: 0, f: 0, g: 0, t: 1,
-            }],
-            w: { f: ws.font || 'SimHei', l: [[0, 3, 3, 1]] },
-        };
-    }
-
-    // 按 sendFormat 决定 advancedDanmakuExtData 用什么格式
-    function extDataFor(model) {
-        if (sendFormat === 'legacy') return JSON.stringify(buildLegacyExtData(model));
-        return JSON.stringify(model);
-    }
+    // num：把 n 归一成数值，null/undefined/空串/NaN 等无效值回落到默认 d。
+    // 注意 null/'' 必须在 +n 之前判断（+null=0、+''=0 都会误判成合法值）。
+    function num(n, d) { if (n === null || n === undefined || n === '') return d; n = +n; return isFinite(n) ? n : d; }
 
     // ============================================================
     //  预设引擎：把一条字幕按激活预设展开成多个弹幕 model
@@ -540,17 +622,49 @@
         return buildModel({ time: timeMs, text: text }, cfg, durationMs);
     }
 
-    // 智能分词：中文/全角符号按单字拆，英文/数字连续串按整词拆。
-    // 返回 [{ text, w }]，w 为宽度权重（中文=1，英文按字符数×0.55），
-    // 用于 KTV / 声明式引擎按“实际宽度”累加 X，避免英文按字母拆、间距不均。
-    function tokenize(text) {
-        const out = [];
-        const re = /[一-鿿　-〿＀-￯]|[A-Za-z0-9]+|[^\s]/g;
+    // 智能分词：
+    //   - 中文、日文假名、韩文、全角符号 → 按单字拆
+    //   - 字母/数字连续串 → 按整词拆（覆盖英/法/德/西/葡/越南/俄/希腊）
+    //   - 半角标点（, . ! ? ' " 等）→ 贴附到前一个 token，不单独占宽
+    // 宽度用 canvas 实测（传入 fontSize/fontFamily），中文单字为基准 1。
+    // 返回 [{ text, w }]，w 为相对宽度（相对于一个中文全角字）。
+    let _measureCtx = null;
+    function measureTextPx(text, fontSize, fontFamily) {
+        try {
+            if (!_measureCtx) _measureCtx = document.createElement('canvas').getContext('2d');
+            _measureCtx.font = fontSize + 'px ' + (fontFamily || 'SimHei');
+            return _measureCtx.measureText(text).width;
+        } catch (e) {
+            return text.length * fontSize;   // 兜底：按字符数估
+        }
+    }
+
+    function tokenize(text, fontSize, fontFamily) {
+        const fs = fontSize || 24;
+        const ff = fontFamily || 'SimHei';
+        // 单字（全宽字符）：中日韩 + 日文假名 + 韩文 + 全角标点/符号
+        const CJK_RE = /^[一-鿿぀-ヿ가-힣　-〿＀-￯]$/;
+        const WORD_RE = /^[A-Za-z0-9À-ɏḀ-ỿЀ-ӿͰ-Ͽ]+$/;
+        const raw = [];
+        const re = /[一-鿿぀-ヿ가-힣　-〿＀-￯]|[A-Za-z0-9À-ɏḀ-ỿЀ-ӿͰ-Ͽ]+|[^\s]/g;
         let m;
         while ((m = re.exec(text))) {
             const t = m[0];
-            const isAsciiWord = /^[A-Za-z0-9]+$/.test(t);
-            out.push({ text: t, w: isAsciiWord ? t.length * 0.55 : 1 });
+            raw.push({ text: t, isWord: WORD_RE.test(t), isCJK: CJK_RE.test(t) });
+        }
+        // 后处理：半角标点贴到前一个 token
+        const out = [];
+        for (const tok of raw) {
+            if (!tok.isWord && !tok.isCJK && out.length) {
+                out[out.length - 1].text += tok.text;
+            } else {
+                out.push({ text: tok.text, w: 1 });
+            }
+        }
+        // 以单个全角字（"国"）为基准，计算每个 token 的相对宽度
+        const unit = measureTextPx('国', fs, ff) || fs;
+        for (const t of out) {
+            t.w = Math.max(0.3, measureTextPx(t.text, fs, ff) / unit);
         }
         return out;
     }
@@ -580,7 +694,7 @@
         // 双排时：本句暗色层提前到「上一句开始时间」出现（覆盖上一句+本句），
         // 亮色层从本句开始扫光——形成“上一句在唱、下一句在下面等着”的卡拉OK效果。
         'chars-karaoke'(sub, cfg, dur, o, seq, prevTime) {
-            const tokens = tokenize((sub.text || '').trim());
+            const tokens = tokenize((sub.text || '').trim(), cfg.size, cfg.font);
             if (!tokens.length) return [];
             const cw = num(o.charWidth, 2.8);
             const sung = o.sungColor || '#ffd700';
@@ -672,12 +786,11 @@
             let pieces = [];
             let weights = null;
             switch (rules.split) {
-                case 'words': pieces = text.split(/\s+/).filter(Boolean); break;
-                case 'lines': pieces = text.split(/\n/).filter(Boolean); break;
                 case 'none': pieces = [text]; break;
-                case 'chars': default: {
-                    // 智能分词：中文按字、英文按词，并带宽度权重
-                    const toks = tokenize(text);
+                case 'lines': pieces = text.split(/\n/).filter(Boolean); break;
+                case 'chars': case 'words': default: {
+                    // chars / words 都走智能分词：中文按字、英文按词，带宽度权重
+                    const toks = tokenize(text, cfg.size, cfg.font);
                     pieces = toks.map((t) => t.text);
                     weights = toks.map((t) => t.w);
                     break;
@@ -1036,6 +1149,22 @@
         previewRefs = [];
     }
 
+    // 确保高级弹幕渲染器已初始化。
+    // loadDanmakuG 方法在插件挂载时就绑定到 player 上、永远存在，但它内部是
+    // `r.renderer.addDanmaku(t)`，而 r.renderer 要等 initAdvancedDanmaku 触发
+    // `new DanmakuGRenderer(...)` 后才存在。刷新页面 / 未展开过原生编辑器时，
+    // 直接调 loadDanmakuG 会因 r.renderer 为 undefined 抛 TypeError → “预览失败”。
+    // 这里检测渲染器 stage DOM（.danmaku-g-rendered-stage）是否存在，不存在则
+    // 调 player.initAdvancedDanmaku() 无参初始化（只建渲染器，不弹原生面板）。
+    function ensureRenderer(p) {
+        if (!p) return false;
+        if (document.querySelector('.danmaku-g-rendered-stage')) return true;
+        if (typeof p.initAdvancedDanmaku === 'function') {
+            try { p.initAdvancedDanmaku(); } catch (e) { log('initAdvancedDanmaku 失败', e); }
+        }
+        return !!document.querySelector('.danmaku-g-rendered-stage');
+    }
+
     async function previewSub(sub) {
         const p = getPlayer();
         log('👁 previewSub 开始：', sub && sub.text, '| player=' + !!p, '| loadDanmakuG=' + (p ? typeof p.loadDanmakuG : 'n/a'));
@@ -1044,12 +1173,19 @@
             status('⚠️ 高级弹幕渲染器未就绪，请先点弹幕输入框内第三个按钮展开一次', 'err');
             return;
         }
+        if (!ensureRenderer(p)) {
+            status('⚠️ 高级弹幕渲染器初始化失败，请展开一次原生高级弹幕编辑器', 'err');
+            return;
+        }
 
         expirePreviews();   // 让上一条预览弹幕过期，不再播放时重现
 
         const cfg = cfgFor(sub);
         const idx = subs.indexOf(sub);
-        const baseDur = Math.min(calcDurationMs(idx), 3000);
+        // 手动弹幕（带 duration 字段且不在列表里）直接用其时长
+        let baseDur;
+        if (idx < 0 && sub && sub.duration) baseDur = sub.duration;
+        else baseDur = Math.min(calcDurationMs(idx), 3000);
         // 时长每次略不同，绕过渲染器“按内容去重”导致同条字幕连续预览无反应的问题
         const dur = Math.max(500, baseDur - (previewSeq % 3));
         // 按激活预设展开成多个 model（seq 从 1 起，保证与预览全部/发送的奇偶一致）
@@ -1060,13 +1196,20 @@
             // 关键：渲染器按「去 id 后的完整 JSON」做内容去重且永不清理，
             // 同一条字幕再预览会因内容相同被拦截。加一个递增字段让每次内容必不同。
             m.__seq = previewSeq;
+            // 打开原生面板时，A 站会开启「只看自己」过滤器（IsOwnDanmkau），
+            // 判定条件为 g.uid === t.user（严格相等）。model 缺 user 字段会被拦下，
+            // 表现就是“打开面板不显示、关闭面板显示”。补上当前 uid 即可通过过滤器。
+            m.user = String(getUid() || '');
             previewRefs.push(m);
         });
 
-        seekTo(models[0].startTime);
-        playVideo();
-        // 关键：addDanmaku 靠渲染器主 tick 的 _time 与弹幕 startTime 对齐，
-        // seek 是异步的，必须等渲染器时间同步到位再注入，否则弹幕落在窗口外不渲染。
+        // 时序修复：先暂停稳住渲染器时钟，再 seek 到 startTime 之前留余量，
+        // 等 seek 生效后注入弹幕，最后 play 让时钟自然推进、穿越弹幕窗口。
+        // 旧时序 seek→play→sleep→注入 会让短视频（时长<注入延迟，如 KTV 句尾字）因
+        // 时钟已越过窗口而被渲染器 timeFrame 过滤掉，表现就是“少数几条不画”。
+        pauseVideo();
+        const t0 = Math.max(0, models[0].startTime - 400);
+        seekTo(t0);
         await sleep(600);
         try {
             p.loadDanmakuG(models);
@@ -1075,7 +1218,9 @@
         } catch (e) {
             log('预览渲染失败', e);
             status('⚠️ 预览失败，请确认已展开高级弹幕编辑器', 'err');
+            return;
         }
+        playVideo();
     }
 
     // 预览全部：把全部字幕一次性铺到视频上，从头过一遍
@@ -1084,6 +1229,10 @@
         if (!p) { status('❌ 未检测到播放器', 'err'); return; }
         if (typeof p.loadDanmakuG !== 'function') {
             status('⚠️ 高级弹幕渲染器未就绪，请先点弹幕输入框内第三个按钮展开一次', 'err');
+            return;
+        }
+        if (!ensureRenderer(p)) {
+            status('⚠️ 高级弹幕渲染器初始化失败，请展开一次原生高级弹幕编辑器', 'err');
             return;
         }
         if (!subs.length) { status('请先上传字幕文件', 'err'); return; }
@@ -1101,21 +1250,23 @@
             expanded.forEach((m) => {
                 m.id = 'cf-prevall-' + (++previewSeq) + '-' + i;
                 m.__seq = previewSeq;   // 绕过渲染器内容去重
+                m.user = String(getUid() || '');   // 通过「只看自己」过滤器（同 previewSub）
                 previewRefs.push(m);
                 models.push(m);
             });
         });
 
-        // 从头播放：seek 到第一条选中字幕的时间点
-        seekTo(Math.max(0, selected[0].time + timeOffset));
+        // 时序修复（同 previewSub）：先暂停 → seek 到首条之前留余量 → 注入全部 → play。
+        pauseVideo();
+        seekTo(Math.max(0, selected[0].time + timeOffset - 400));
         previewPaused = false;
-        playVideo();
         // 等渲染器时间同步（同 previewSub 的时序修复）
         setTimeout(() => {
             try {
                 p.loadDanmakuG(models);
                 log('▶ previewAll：' + selected.length + ' 条字幕 → ' + models.length + ' 个 model，loadDanmakuG 调用完成');
                 status(`▶ 预览全部：${selected.length} 条字幕 → ${models.length} 条弹幕`, 'busy');
+                playVideo();
             } catch (e) {
                 log('预览全部失败', e);
                 status('⚠️ 预览失败，请确认已展开高级弹幕编辑器', 'err');
@@ -1129,6 +1280,7 @@
 
     let panelEl = null;          // 我们的面板根节点
     let isOurView = true;        // 当前显示的是我们的 UI 还是原生编辑器
+    let panelMode = 'subtitle';  // 'subtitle' 字幕模式 | 'danmaku' 弹幕模式
 
     // 默认视图设置（localStorage 持久化）
     const STORE_KEY = 'cf_sub_default_native';
@@ -1140,7 +1292,11 @@
         panelEl = document.createElement('div');
         panelEl.id = 'cf-sub-panel';
         panelEl.innerHTML = `
-        <div class="cf-panel-body">
+        <div class="cf-mode-bar">
+            <span class="cf-mode-hint" id="cf-mode-hint">字幕模式</span>
+            <button type="button" class="cf-fold-btn" id="cf-toggle-danmaku">📝 弹幕模式</button>
+        </div>
+        <div class="cf-panel-body" id="cf-subtitle-body">
             <div class="cf-sec">
                 <p class="cf-sec-title">字幕文件<button type="button" class="cf-fold-btn" id="cf-remove">🗑 移除</button></p>
                 <div class="cf-drop" id="cf-drop">
@@ -1172,7 +1328,7 @@
                 </div>
             </div>
 
-            <div class="cf-sec">
+            <div class="cf-sec" id="cf-preset-sec">
                 <p class="cf-sec-title">预设<button type="button" class="cf-fold-btn" id="cf-fold-preset">折叠</button><button type="button" class="cf-fold-btn" id="cf-import-preset">📥 导入</button><input type="file" id="cf-preset-file" accept=".json" style="display:none"></p>
                 <div id="cf-preset-body">
                     <div class="cf-row">
@@ -1199,8 +1355,9 @@
                 </div>
             </div>
 
-            <div class="cf-sec">
-                <p class="cf-sec-title">样式</p>
+            <div class="cf-sec" id="cf-style-sec">
+                <p class="cf-sec-title">样式<button type="button" class="cf-fold-btn" id="cf-fold-style">折叠</button></p>
+                <div id="cf-style-body">
                 <div class="cf-row">
                     <label>样式来源</label>
                     <select id="cf-style-source">
@@ -1208,14 +1365,14 @@
                         <option value="editor"${styleSource === 'editor' ? ' selected' : ''}>编辑器样式</option>
                     </select>
                 </div>
-                <div class="cf-row">
+                <div class="cf-row" id="cf-font-row">
                     <label>字体</label>
                     <select id="cf-font">${FONTS.map((f) => `<option value="${f}"${f === currentStyleConfig.font ? ' selected' : ''}>${FONT_LABELS[f]}</option>`).join('')}</select>
                     <span class="cf-gap"></span>
                     <label>字号</label>
                     <input type="number" id="cf-size" min="12" max="150" value="${currentStyleConfig.size}">
                 </div>
-                <div class="cf-row">
+                <div class="cf-row" id="cf-color-row">
                     <label>颜色</label>
                     <input type="color" id="cf-color" value="${rgbToHex(currentStyleConfig.color)}">
                     <span class="cf-gap"></span>
@@ -1223,26 +1380,30 @@
                     <label class="cf-chk"><input type="checkbox" id="cf-stroke"${currentStyleConfig.stroke ? ' checked' : ''}>描边</label>
                     <label class="cf-chk"><input type="checkbox" id="cf-shadow"${currentStyleConfig.shadow ? ' checked' : ''}>投影</label>
                 </div>
-                <div class="cf-row">
+                <div class="cf-row" id="cf-anchor-row">
                     <label>锚点</label>
                     <div class="cf-anchor-grid" id="cf-anchor">
                         ${ANCHORS.map((a) => `<div class="cf-anchor-cell${a.v === currentStyleConfig.anchor ? ' sel' : ''}" data-v="${a.v}">${a.label}</div>`).join('')}
                     </div>
                 </div>
-                <div class="cf-row">
+                <div class="cf-row" id="cf-pos-row">
                     <label>位置X</label>
                     <input type="number" id="cf-posx" min="0" max="100" value="${currentStyleConfig.posX}">
                     <label>Y</label>
                     <input type="number" id="cf-posy" min="0" max="100" value="${currentStyleConfig.posY}">
                 </div>
+                <div class="cf-row" id="cf-pos-owner-tip" style="display:none">
+                    <span style="font-size:11px;color:#fd4c5d">📍 位置由预设控制，请在预设面板调整</span>
+                </div>
                 <div class="cf-row">
                     <label>时间偏移</label>
-                    <input type="number" id="cf-time-offset" min="-60000" max="60000" step="100" value="${timeOffset}">
+                    <input type="number" class="cf-wide-input" id="cf-time-offset" min="-60000" max="60000" step="100" value="${timeOffset}">
                     <span style="font-size:11px;color:#999">ms，正=延后，负=提前</span>
+                </div>
                 </div>
             </div>
         </div>
-        <div class="cf-panel-actions">
+        <div class="cf-panel-actions" id="cf-subtitle-actions">
             <div class="cf-actions-row">
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-all">▶ 预览全部</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-pause">⏸ 暂停预览</button>
@@ -1254,6 +1415,84 @@
                 <label class="cf-interval">发送间隔
                     <input type="number" id="cf-interval" min="0" max="60000" step="100" value="${sendInterval}"> ms
                 </label>
+            </div>
+        </div>
+        <!-- 弹幕模式：单条手动输入，仿原生输入框 -->
+        <div class="cf-panel-body" id="cf-danmaku-body" style="display:none">
+            <div class="cf-sec">
+                <p class="cf-sec-title">弹幕内容</p>
+                <div class="cf-danmaku-input-wrap">
+                    <textarea class="cf-danmaku-input" id="cf-danmaku-text" placeholder="发个高级弹幕呗，嗷嗷嗷" maxlength="255"></textarea>
+                    <span class="cf-danmaku-count" id="cf-danmaku-count">0/255</span>
+                </div>
+            </div>
+            <div class="cf-sec">
+                <p class="cf-sec-title">时间</p>
+                <div class="cf-row">
+                    <label>起始</label>
+                    <input type="text" class="cf-wide-input" id="cf-danmaku-time" placeholder="00:00:01.974">
+                    <button type="button" class="cf-fold-btn" id="cf-danmaku-pick">⌚ 拾取当前</button>
+                </div>
+                <div class="cf-row">
+                    <label>持续</label>
+                    <input type="number" class="cf-wide-input" id="cf-danmaku-duration" min="100" max="30000" step="100" value="5000">
+                    <span style="font-size:11px;color:#999">ms</span>
+                </div>
+                <p class="cf-danmaku-tip">起始留空=当前播放位置；支持 00:00:01.974（A站原生）/ 0:01.974 / 秒数</p>
+            </div>
+
+            <div class="cf-sec">
+                <p class="cf-sec-title">高级编辑<button type="button" class="cf-fold-btn" id="cf-fold-adv">折叠</button></p>
+                <div id="cf-adv-body">
+                    <div class="cf-row">
+                        <label>层级</label>
+                        <input type="number" id="cf-adv-zindex" min="1" max="99" value="${advancedConfig.zIndex}">
+                    </div>
+                    <div class="cf-row">
+                        <label>旋转</label>
+                        <span class="cf-adv-3">X<input type="number" id="cf-adv-rx" min="-360" max="360" value="${advancedConfig.rotate.x}"></span>
+                        <span class="cf-adv-3">Y<input type="number" id="cf-adv-ry" min="-360" max="360" value="${advancedConfig.rotate.y}"></span>
+                        <span class="cf-adv-3">Z<input type="number" id="cf-adv-rz" min="-360" max="360" value="${advancedConfig.rotate.z}"></span>
+                    </div>
+                    <div class="cf-row">
+                        <label>缩放</label>
+                        <span class="cf-adv-3">X<input type="number" id="cf-adv-sx" min="0.1" max="5" step="0.1" value="${advancedConfig.scale.x}"></span>
+                        <span class="cf-adv-3">Y<input type="number" id="cf-adv-sy" min="0.1" max="5" step="0.1" value="${advancedConfig.scale.y}"></span>
+                    </div>
+                    <div class="cf-row">
+                        <label>模糊</label>
+                        <input type="number" id="cf-adv-blur" min="0" max="50" value="${advancedConfig.blur}">
+                        <span style="font-size:11px;color:#999">px</span>
+                    </div>
+                    <div class="cf-row">
+                        <label>投影</label>
+                        <span class="cf-adv-3">X<input type="number" id="cf-adv-shx" min="-100" max="100" value="${advancedConfig.shadow ? advancedConfig.shadow.x : 1}"></span>
+                        <span class="cf-adv-3">Y<input type="number" id="cf-adv-shy" min="-100" max="100" value="${advancedConfig.shadow ? advancedConfig.shadow.y : 1}"></span>
+                        <span class="cf-adv-3">模糊<input type="number" id="cf-adv-shb" min="0" max="50" value="${advancedConfig.shadow ? advancedConfig.shadow.blur : 3}"></span>
+                        <input type="color" id="cf-adv-shc" value="${advancedConfig.shadow ? advancedConfig.shadow.color : '#000000'}">
+                    </div>
+                    <div class="cf-row">
+                        <label>外发光</label>
+                        <span class="cf-adv-3">模糊<input type="number" id="cf-adv-snb" min="0" max="50" value="${advancedConfig.shine ? advancedConfig.shine.blur : 5}"></span>
+                        <span class="cf-adv-3">大小<input type="number" id="cf-adv-sns" min="0" max="20" value="${advancedConfig.shine ? advancedConfig.shine.size : 2}"></span>
+                        <input type="color" id="cf-adv-snc" value="${advancedConfig.shine ? advancedConfig.shine.color : '#ffd700'}">
+                    </div>
+                </div>
+            </div>
+
+            <div class="cf-sec" id="cf-moves-sec">
+                <p class="cf-sec-title">运动轨迹<button type="button" class="cf-fold-btn" id="cf-move-add">＋ 加动作</button></p>
+                <div id="cf-moves"></div>
+                <p class="cf-danmaku-tip">多段运动按顺序衔接；每段指定起点/终点坐标与耗时</p>
+            </div>
+        </div>
+        <div class="cf-panel-actions" id="cf-danmaku-actions" style="display:none">
+            <div class="cf-actions-row">
+                <button type="button" class="cf-btn cf-btn-b" id="cf-danmaku-preview">👁 预览</button>
+                <button type="button" class="cf-btn cf-btn-p" id="cf-danmaku-send">▶ 发送</button>
+            </div>
+            <div class="cf-actions-row">
+                <button type="button" class="cf-btn cf-btn-b" id="cf-export-advanced">📤 导出为预设</button>
             </div>
         </div>
         <div class="cf-status" id="cf-status">请上传字幕文件</div>`;
@@ -1407,6 +1646,15 @@
         if (btn) btn.textContent = presetFolded ? '展开' : '折叠';
     }
 
+    // 折叠 / 展开样式区
+    function toggleStyleFold() {
+        styleFolded = !styleFolded;
+        const body = $('#cf-style-body');
+        const btn = $('#cf-fold-style');
+        if (body) body.style.display = styleFolded ? 'none' : '';
+        if (btn) btn.textContent = styleFolded ? '展开' : '折叠';
+    }
+
     // 全选 / 反选
     function selectRange(mode) {
         if (!subs.length) { status('请先上传字幕', 'err'); return; }
@@ -1469,6 +1717,394 @@
     }
 
     // ============================================================
+    //  弹幕模式（手动单条输入）
+    // ============================================================
+
+    // 切换 字幕模式 / 弹幕模式（预设、样式区在两种模式间复用）
+    function switchPanelMode(mode) {
+        panelMode = mode || (panelMode === 'subtitle' ? 'danmaku' : 'subtitle');
+        const subBody = $('#cf-subtitle-body');
+        const subAct = $('#cf-subtitle-actions');
+        const dmBody = $('#cf-danmaku-body');
+        const dmAct = $('#cf-danmaku-actions');
+        const btn = $('#cf-toggle-danmaku');
+        const hint = $('#cf-mode-hint');
+        const presetSec = $('#cf-preset-sec');
+        const styleSec = $('#cf-style-sec');
+        if (panelMode === 'danmaku') {
+            if (subBody) subBody.style.display = 'none';
+            if (subAct) subAct.style.display = 'none';
+            if (dmBody) dmBody.style.display = '';
+            if (dmAct) dmAct.style.display = '';
+            // 预设/样式区移动到弹幕 body 末尾（DOM 移动保留事件）
+            if (dmBody && presetSec) dmBody.appendChild(presetSec);
+            if (dmBody && styleSec) dmBody.appendChild(styleSec);
+            if (btn) btn.textContent = '📂 字幕模式';
+            if (hint) hint.textContent = '弹幕模式';
+            status('📝 弹幕模式：预设与样式可复用');
+        } else {
+            if (subBody) subBody.style.display = '';
+            if (subAct) subAct.style.display = '';
+            if (dmBody) dmBody.style.display = 'none';
+            if (dmAct) dmAct.style.display = 'none';
+            if (subBody && presetSec) subBody.appendChild(presetSec);
+            if (subBody && styleSec) subBody.appendChild(styleSec);
+            if (btn) btn.textContent = '📝 弹幕模式';
+            if (hint) hint.textContent = '字幕模式';
+            status('📂 字幕模式');
+        }
+    }
+
+    // 解析用户输入的时间：支持 mm:ss.xx / mm:ss / 纯秒数，返回毫秒；无效返回 null
+    function parseManualTime(s) {
+        if (!s || !s.trim()) return null;
+        const t = s.trim();
+        let ms = null;
+        // 支持：
+        //   mm:ss.xxx / mm:ss.xx / mm:ss       （分:秒.毫秒，两位小数按厘秒）
+        //   hh:mm:ss.mmm / hh:mm:ss:mmm        （A 站原生编辑器格式：时:分:秒.毫秒）
+        //   纯秒数 30.512
+        const hms = t.match(/^(\d{1,3}):(\d{1,2}):(\d{1,2})[.:](\d{1,3})$/);   // 时:分:秒.毫秒
+        if (hms) {
+            const hh = parseInt(hms[1], 10);
+            const mm = parseInt(hms[2], 10);
+            const ss = parseInt(hms[3], 10);
+            let frac = hms[4];
+            if (frac.length === 1) frac += '00';
+            else if (frac.length === 2) frac += '0';
+            ms = hh * 3600000 + mm * 60000 + ss * 1000 + parseInt(frac.slice(0, 3), 10);
+            return ms;
+        }
+        const ms1 = t.match(/^(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?$/);   // 分:秒.毫秒
+        if (ms1) {
+            const mm = parseInt(ms1[1], 10);
+            const ss = parseInt(ms1[2], 10);
+            let frac = ms1[3] || '0';
+            if (frac.length === 1) frac += '00';
+            else if (frac.length === 2) frac += '0';
+            return mm * 60000 + ss * 1000 + parseInt(frac.slice(0, 3), 10);
+        }
+        if (/^\d+(\.\d+)?$/.test(t)) {   // 纯秒数
+            return Math.round(parseFloat(t) * 1000);
+        }
+        return null;
+    }
+
+    // 把毫秒格式化成 A 站原生样式 HH:MM:SS:mmm
+    function fmtManualTime(ms) {
+        const t = Math.max(0, Math.round(ms));
+        const h = Math.floor(t / 3600000);
+        const m = Math.floor((t % 3600000) / 60000);
+        const s = Math.floor((t % 60000) / 1000);
+        const mm = t % 1000;
+        return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') + '.' + String(mm).padStart(3, '0');
+    }
+
+    // 拾取当前播放位置填入「起始」输入框（格式同 A 站原生 HH:MM:SS:mmm）
+    function pickManualTime() {
+        const p = getPlayer();
+        const curMs = (p && typeof p.currentTime === 'number') ? Math.round(p.currentTime * 1000) : 0;
+        const inp = $('#cf-danmaku-time');
+        if (inp) inp.value = fmtManualTime(curMs);
+        status('⌚ 已拾取当前时间：' + fmtManualTime(curMs), 'ok');
+    }
+
+    // 从弹幕输入框构造一条虚拟字幕
+    // 起始：输入框优先，留空则用当前播放位置
+    // 持续：独立 ms 输入框
+    function makeManualSub(text) {
+        const p = getPlayer();
+        const curMs = (p && typeof p.currentTime === 'number') ? Math.round(p.currentTime * 1000) : 0;
+        const startCustom = parseManualTime(($('#cf-danmaku-time') || {}).value);
+        const start = startCustom != null ? startCustom : curMs;
+        const durVal = parseInt(($('#cf-danmaku-duration') || {}).value, 10);
+        const duration = (isNaN(durVal) || durVal < 100) ? 5000 : Math.min(durVal, 30000);
+        return { time: start, duration, text: text.trim(), selected: true };
+    }
+
+    // 弹幕模式：预览
+    async function previewManual() {
+        const text = ($('#cf-danmaku-text') || {}).value;
+        if (!text || !text.trim()) { status('请输入弹幕内容', 'err'); return; }
+        readAdvancedConfig();
+        await previewSub(makeManualSub(text));
+    }
+
+    // 弹幕模式：发送
+    async function sendManual() {
+        const text = ($('#cf-danmaku-text') || {}).value;
+        if (!text || !text.trim()) { status('请输入弹幕内容', 'err'); return; }
+        const v = getVideoInfo();
+        if (!v || !v.videoId) { status('❌ 未获取到视频信息，请确认已登录', 'err'); return; }
+        readAdvancedConfig();
+        const sub = makeManualSub(text);
+        const cfg = cfgFor(sub);
+        try {
+            const models = expandSub(sub, cfg, sub.duration || 5000, 1);
+            for (const m of models) await sendModel(m);
+            status(`✅ 已发送：${text.trim()} @ ${fmt(sub.time)}（${Math.round((sub.duration || 5000) / 1000)}s）`, 'ok');
+            const inp = $('#cf-danmaku-text');
+            if (inp) inp.value = '';
+            updateManualCount();
+        } catch (e) {
+            status('✗ 发送失败: ' + e.message, 'err');
+        }
+    }
+
+    function updateManualCount() {
+        const inp = $('#cf-danmaku-text');
+        const cnt = $('#cf-danmaku-count');
+        if (inp && cnt) cnt.textContent = (inp.value.length || 0) + '/255';
+    }
+
+    // ============================================================
+    //  高级编辑（全字段）：读取 UI → advancedConfig
+    // ============================================================
+
+    // 缓动函数（CSS 合法值）。
+    // 关键坑：A 站默认走 DOM_CSS 渲染器，把 timingFunction 原样塞进 CSS `animation` 简写，
+    // 只有 CSS 原生关键字（linear/ease*/cubic-bezier）才合法。A 站编辑器那 30 种自定义
+    // key（quadEaseIn 等）塞进去会导致整条 animation 失效、弹幕停在 0,0 不动。
+    // 因此这里 value 一律用 CSS 合法值：标准关键字 + cubic-bezier 近似；label 汉化给用户看。
+    const TIMING_FUNCS = [
+        { value: 'linear', label: '匀速' },
+        { value: 'ease-in', label: '缓入（标准）' },
+        { value: 'ease-out', label: '缓出（标准）' },
+        { value: 'ease-in-out', label: '缓入缓出（标准）' },
+        { value: 'cubic-bezier(0.55,0.085,0.68,0.53)', label: '二次·缓入' },
+        { value: 'cubic-bezier(0.25,0.46,0.45,0.94)', label: '二次·缓出' },
+        { value: 'cubic-bezier(0.455,0.03,0.515,0.955)', label: '二次·缓入缓出' },
+        { value: 'cubic-bezier(0.55,0.055,0.675,0.19)', label: '三次·缓入' },
+        { value: 'cubic-bezier(0.215,0.61,0.355,1)', label: '三次·缓出' },
+        { value: 'cubic-bezier(0.645,0.045,0.355,1)', label: '三次·缓入缓出' },
+        { value: 'cubic-bezier(0.895,0.03,0.685,0.22)', label: '四次·缓入' },
+        { value: 'cubic-bezier(0.165,0.84,0.44,1)', label: '四次·缓出' },
+        { value: 'cubic-bezier(0.77,0,0.175,1)', label: '四次·缓入缓出' },
+        { value: 'cubic-bezier(0.755,0.05,0.855,0.06)', label: '五次·缓入' },
+        { value: 'cubic-bezier(0.23,1,0.32,1)', label: '五次·缓出' },
+        { value: 'cubic-bezier(0.86,0,0.07,1)', label: '五次·缓入缓出' },
+        { value: 'cubic-bezier(0.47,0,0.745,0.715)', label: '正弦·缓入' },
+        { value: 'cubic-bezier(0.39,0.575,0.565,1)', label: '正弦·缓出' },
+        { value: 'cubic-bezier(0.445,0.05,0.55,0.95)', label: '正弦·缓入缓出' },
+        { value: 'cubic-bezier(0.95,0.05,0.795,0.035)', label: '指数·缓入' },
+        { value: 'cubic-bezier(0.19,1,0.22,1)', label: '指数·缓出' },
+        { value: 'cubic-bezier(1,0,0,1)', label: '指数·缓入缓出' },
+        { value: 'cubic-bezier(0.6,0.04,0.98,0.335)', label: '圆形·缓入' },
+        { value: 'cubic-bezier(0.075,0.82,0.165,1)', label: '圆形·缓出' },
+        { value: 'cubic-bezier(0.785,0.135,0.15,0.86)', label: '圆形·缓入缓出' },
+        { value: 'cubic-bezier(0.6,-0.28,0.735,0.045)', label: '回退·缓入' },
+        { value: 'cubic-bezier(0.175,0.885,0.32,1.275)', label: '回退·缓出' },
+        { value: 'cubic-bezier(0.68,-0.55,0.265,1.55)', label: '回退·缓入缓出' },
+    ];
+
+    // 从高级编辑 UI 读取值写回 advancedConfig
+    function readAdvancedConfig() {
+        const g = (id) => { const e = $(id); return e ? e.value : ''; };
+        advancedConfig.zIndex = clamp(parseInt(g('#cf-adv-zindex'), 10), 1, 99) || 50;
+        advancedConfig.rotate = {
+            x: num(parseFloat(g('#cf-adv-rx')), 0),
+            y: num(parseFloat(g('#cf-adv-ry')), 0),
+            z: num(parseFloat(g('#cf-adv-rz')), 0),
+        };
+        advancedConfig.scale = {
+            x: num(parseFloat(g('#cf-adv-sx')), 1),
+            y: num(parseFloat(g('#cf-adv-sy')), 1),
+            z: 1,
+        };
+        advancedConfig.blur = num(parseFloat(g('#cf-adv-blur')), 0);
+        advancedConfig.shadow = {
+            x: num(parseFloat(g('#cf-adv-shx')), 1),
+            y: num(parseFloat(g('#cf-adv-shy')), 1),
+            blur: num(parseFloat(g('#cf-adv-shb')), 3),
+            color: g('#cf-adv-shc') || '#000000',
+        };
+        advancedConfig.shine = {
+            blur: num(parseFloat(g('#cf-adv-snb')), 5),
+            size: num(parseFloat(g('#cf-adv-sns')), 2),
+            color: g('#cf-adv-snc') || '#ffd700',
+        };
+        // 运动轨迹从动态列表读取：留空 → null（跟随样式/预设/顶层变换），
+        // 显式填了数字才当固定值（区别于旧的 num(...,50) 会把空值硬兜成 50）。
+        const moves = [];
+        $$('#cf-moves .cf-move-item').forEach((item) => {
+            const raw = (sel) => { const e = item.querySelector(sel); return e ? e.value : ''; };
+            const coord = (sel) => { const v = raw(sel); return (v === '' || v == null) ? null : num(parseFloat(v), 50); };
+            moves.push({
+                fromX: coord('.cf-mv-fx'),
+                fromY: coord('.cf-mv-fy'),
+                toX: coord('.cf-mv-tx'),
+                toY: coord('.cf-mv-ty'),
+                fromScaleX: coord('.cf-mv-fsx'),
+                fromScaleY: coord('.cf-mv-fsy'),
+                toScaleX: coord('.cf-mv-tsx'),
+                toScaleY: coord('.cf-mv-tsy'),
+                fromRotateX: coord('.cf-mv-frx'),
+                fromRotateY: coord('.cf-mv-fry'),
+                fromRotateZ: coord('.cf-mv-frz'),
+                toRotateX: coord('.cf-mv-trx'),
+                toRotateY: coord('.cf-mv-try'),
+                toRotateZ: coord('.cf-mv-trz'),
+                moveTime: coord('.cf-mv-mt'),   // 空 → null（跟随 durationMs），显式数字才固定
+                timingFunction: raw('.cf-mv-tf') || 'linear',
+            });
+        });
+        advancedConfig.moves = moves.length ? moves : advancedConfig.moves;
+    }
+
+    // 渲染运动轨迹列表
+    function renderMoves() {
+        const box = $('#cf-moves');
+        if (!box) return;
+        box.innerHTML = advancedConfig.moves.map((mv, i) => {
+            // null 坐标显示为空输入框（占位提示「跟随样式」），显式数字才显示数值
+            const v = (n) => (n == null ? '' : n);
+            return `
+            <div class="cf-move-item" data-i="${i}">
+                <button type="button" class="cf-move-del">删除</button>
+                <div class="cf-row"><label>起点</label>X<input type="number" class="cf-mv-fx" min="0" max="100" placeholder="跟随样式" value="${v(mv.fromX)}">Y<input type="number" class="cf-mv-fy" min="0" max="100" placeholder="跟随样式" value="${v(mv.fromY)}"></div>
+                <div class="cf-row"><label>终点</label>X<input type="number" class="cf-mv-tx" min="0" max="100" placeholder="跟随样式" value="${v(mv.toX)}">Y<input type="number" class="cf-mv-ty" min="0" max="100" placeholder="跟随样式" value="${v(mv.toY)}"></div>
+                <div class="cf-row"><label>起点拉伸</label>X<input type="number" class="cf-mv-fsx" min="0.1" max="5" step="0.1" placeholder="跟随本体" value="${v(mv.fromScaleX)}">Y<input type="number" class="cf-mv-fsy" min="0.1" max="5" step="0.1" placeholder="跟随本体" value="${v(mv.fromScaleY)}"></div>
+                <div class="cf-row"><label>终点拉伸</label>X<input type="number" class="cf-mv-tsx" min="0.1" max="5" step="0.1" placeholder="跟随本体" value="${v(mv.toScaleX)}">Y<input type="number" class="cf-mv-tsy" min="0.1" max="5" step="0.1" placeholder="跟随本体" value="${v(mv.toScaleY)}"></div>
+                <div class="cf-row"><label>起点旋转</label>X<input type="number" class="cf-mv-frx" min="-3600" max="3600" placeholder="0" value="${v(mv.fromRotateX)}">Y<input type="number" class="cf-mv-fry" min="-3600" max="3600" placeholder="0" value="${v(mv.fromRotateY)}">Z<input type="number" class="cf-mv-frz" min="-3600" max="3600" placeholder="0" value="${v(mv.fromRotateZ)}"></div>
+                <div class="cf-row"><label>终点旋转</label>X<input type="number" class="cf-mv-trx" min="-3600" max="3600" placeholder="0" value="${v(mv.toRotateX)}">Y<input type="number" class="cf-mv-try" min="-3600" max="3600" placeholder="0" value="${v(mv.toRotateY)}">Z<input type="number" class="cf-mv-trz" min="-3600" max="3600" placeholder="0" value="${v(mv.toRotateZ)}"></div>
+                <div class="cf-row"><label>耗时</label><input type="number" class="cf-mv-mt" min="100" max="30000" step="100" placeholder="跟随时长" value="${v(mv.moveTime)}"><span style="font-size:11px;color:#999">ms</span>
+                    <label>缓动</label><select class="cf-mv-tf">${TIMING_FUNCS.map((f) => `<option value="${f.value}"${f.value === (mv.timingFunction || 'linear') ? ' selected' : ''}>${f.label}</option>`).join('')}</select>
+                </div>
+            </div>`;
+        }).join('');
+        // 删除按钮
+        box.querySelectorAll('.cf-move-del').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const i = +btn.closest('.cf-move-item').dataset.i;
+                if (advancedConfig.moves.length <= 1) { status('至少保留一个动作', 'err'); return; }
+                advancedConfig.moves.splice(i, 1);
+                renderMoves();
+            });
+        });
+    }
+
+    // 添加一个运动动作：坐标/缩放/旋转/耗时默认空（跟随样式/预设与顶层变换），用户可手动填数字接管
+    function addMove() {
+        advancedConfig.moves.push({
+            fromX: null, fromY: null, toX: null, toY: null,
+            fromScaleX: null, fromScaleY: null, toScaleX: null, toScaleY: null,
+            fromRotateX: null, fromRotateY: null, fromRotateZ: null,
+            toRotateX: null, toRotateY: null, toRotateZ: null,
+            moveTime: null, timingFunction: 'linear',
+        });
+        renderMoves();
+    }
+
+    // 高级编辑折叠
+    let advFolded = false;
+    function toggleAdvFold() {
+        advFolded = !advFolded;
+        const body = $('#cf-adv-body');
+        const btn = $('#cf-fold-adv');
+        if (body) body.style.display = advFolded ? 'none' : '';
+        if (btn) btn.textContent = advFolded ? '展开' : '折叠';
+    }
+
+    // 导出前的「可调字段」勾选层：勾中的字段会写成 params 声明（导入后可在预设区微调），
+    // 未勾选的字段仍随 effects 整体导出并生效，只是不进入可调控件。
+    function openAdjustablePicker(onConfirm) {
+        const old = $('#cf-adjust-picker');
+        if (old) old.remove();
+
+        const mask = document.createElement('div');
+        mask.id = 'cf-adjust-picker';
+        mask.className = 'cf-adjust-picker';
+        mask.innerHTML = `
+            <div class="cf-adjust-dlg">
+                <p class="cf-adjust-title">导出预设 · 勾选可调字段</p>
+                <p class="cf-adjust-sub">勾选的字段写入 JSON 的 params，导入后可在预设区微调；未勾选仍生效但不可调。</p>
+                <div class="cf-adjust-tools">
+                    <button type="button" class="cf-fold-btn" data-act="all">全选</button>
+                    <button type="button" class="cf-fold-btn" data-act="none">全不选</button>
+                </div>
+                <div class="cf-adjust-body"></div>
+                <div class="cf-adjust-foot">
+                    <button type="button" class="cf-btn cf-btn-b" data-act="cancel">取消</button>
+                    <button type="button" class="cf-btn cf-btn-p" data-act="ok">导出</button>
+                </div>
+            </div>`;
+        document.body.appendChild(mask);
+
+        const body = mask.querySelector('.cf-adjust-body');
+        let lastGroup = undefined;
+        ADJUSTABLE_FIELDS.forEach((f) => {
+            if (f.group !== lastGroup) {
+                lastGroup = f.group;
+                const t = document.createElement('div');
+                t.className = 'cf-param-group-title';
+                t.textContent = f.group;
+                body.appendChild(t);
+            }
+            const row = document.createElement('label');
+            row.className = 'cf-adjust-item';
+            row.innerHTML = `<input type="checkbox" data-key="${f.key}" checked><span>${f.label}</span>`;
+            body.appendChild(row);
+        });
+
+        const checks = () => Array.from(mask.querySelectorAll('input[type=checkbox]'));
+        mask.querySelector('[data-act=all]').addEventListener('click', () => checks().forEach((c) => { c.checked = true; }));
+        mask.querySelector('[data-act=none]').addEventListener('click', () => checks().forEach((c) => { c.checked = false; }));
+        mask.querySelector('[data-act=cancel]').addEventListener('click', () => mask.remove());
+        mask.querySelector('[data-act=ok]').addEventListener('click', () => {
+            const keys = checks().filter((c) => c.checked).map((c) => c.dataset.key);
+            mask.remove();
+            onConfirm(keys);
+        });
+        mask.addEventListener('click', (e) => { if (e.target === mask) mask.remove(); });
+    }
+
+    // 一键导出：把当前样式 + 高级字段打包成 declarative 预设
+    function exportAdvancedPreset() {
+        readAdvancedConfig();
+        openAdjustablePicker((checkedKeys) => {
+            const chosen = new Set(checkedKeys);
+            // 勾选的字段 → params 声明（保留 type/min/max/step/group/default，供导入后渲染控件）
+            const params = ADJUSTABLE_FIELDS
+                .filter((f) => chosen.has(f.key))
+                .map((f) => {
+                    const p = { key: f.key, label: f.label, type: f.type, group: f.group };
+                    if (f.min !== undefined) p.min = f.min;
+                    if (f.max !== undefined) p.max = f.max;
+                    if (f.step !== undefined) p.step = f.step;
+                    if (f.default !== undefined) p.default = f.default;
+                    if (f.choices) p.choices = f.choices;
+                    return p;
+                });
+            const name = '高级弹幕-' + Date.now();
+            const id = 'adv-' + Math.random().toString(36).slice(2, 8);
+            // 若运动轨迹里填了固定坐标，说明位置被接管，编辑器位置 X/Y 应禁用
+            const hasFixedCoords = advancedConfig.moves.some((m) =>
+                m.fromX != null || m.fromY != null || m.toX != null || m.toY != null);
+            const preset = {
+                id,
+                name,
+                desc: `由编辑器导出的全字段预设（含样式与运动，可调字段 ${params.length} 个）`,
+                transform: 'none',
+                options: {},
+                params,
+                owns: hasFixedCoords ? ['posX', 'posY'] : [],
+                // 高级字段统一放 effects：导入后批量发送会应用这些字段
+                effects: {
+                    zIndex: advancedConfig.zIndex,
+                    rotate: Object.assign({}, advancedConfig.rotate),
+                    scale: Object.assign({}, advancedConfig.scale),
+                    blur: advancedConfig.blur,
+                    shine: advancedConfig.shine ? Object.assign({}, advancedConfig.shine) : null,
+                    shadow: advancedConfig.shadow ? Object.assign({}, advancedConfig.shadow) : null,
+                    moves: advancedConfig.moves.map((m) => Object.assign({}, m)),
+                },
+            };
+            downloadJson(name + '.json', preset);
+            status(`📤 已导出高级预设 ${name}.json（可调字段 ${params.length} 个）`, 'ok');
+        });
+    }
+
+    // ============================================================
     //  预设 UI 逻辑
     // ============================================================
 
@@ -1489,7 +2125,67 @@
         // 保存/恢复按钮：有参数可调时才显示
         const actRow = $('#cf-preset-actions-row');
         if (actRow) actRow.style.display = (preset && preset.params && preset.params.length) ? '' : 'none';
+        syncEditorOwnedUI();
         renderPresetParams();
+    }
+
+    // ============================================================
+    //  编辑器字段「接管」机制：预设声明自己接管了哪些字段，编辑器据此禁用对应输入，
+    //  避免“改了没反应”的困惑。这是统一入口，新增预设只需声明 owns，不用逐个改 UI。
+    //  字段名对应 cfg（buildModel 读的样式配置）里的 key。
+    // ============================================================
+    // 各 transform 默认接管的字段（预设可在 JSON 里用 owns 覆盖）
+    const TRANSFORM_OWNS = {
+        'none': [],
+        'chars-vertical': ['posX', 'posY'],          // 竖排：引擎算每个字的 X/Y
+        'chars-karaoke': ['posX', 'posY', 'color'],  // KTV：引擎算 X/Y + 唱到/待唱色
+        'multi-lang': ['posY', 'color'],             // 多语：引擎定主/副行 Y 与颜色
+        'declarative': ['posX', 'posY', 'color'],    // 声明式：base 定 X/Y，color 定颜色
+    };
+    // 编辑器字段 → 控件选择器（禁用/启用的目标）
+    const EDITOR_FIELD_CTRLS = {
+        font: '#cf-font',
+        size: '#cf-size',
+        color: '#cf-color',
+        bold: '#cf-bold',
+        stroke: '#cf-stroke',
+        shadow: '#cf-shadow',
+        anchor: '#cf-anchor',
+        posX: '#cf-posx',
+        posY: '#cf-posy',
+    };
+
+    // 取当前预设接管的字段集合：preset.owns 显式声明优先，否则按 transform 默认
+    function getPresetOwns(preset) {
+        if (!preset) return [];
+        if (Array.isArray(preset.owns)) return preset.owns;
+        return TRANSFORM_OWNS[preset.transform] || [];
+    }
+
+    // 根据当前预设的 owns 同步编辑器：被接管的字段禁用（灰 + 提示），其余启用。
+    function syncEditorOwnedUI() {
+        const preset = getActivePreset();
+        const owns = getPresetOwns(preset);
+        const owned = (f) => owns.includes(f);
+
+        // 字段控件禁用/启用
+        Object.keys(EDITOR_FIELD_CTRLS).forEach((field) => {
+            const ctrl = $(EDITOR_FIELD_CTRLS[field]);
+            if (!ctrl) return;
+            const taken = owned(field);
+            ctrl.disabled = taken;
+            ctrl.classList.toggle('cf-owner-disabled', taken);
+            if (taken) ctrl.title = '由预设控制，请在预设面板调整';
+            else ctrl.removeAttribute('title');
+        });
+
+        // 位置提示行：posX/posY 被接管时显示
+        const tip = $('#cf-pos-owner-tip');
+        if (tip) tip.style.display = (owned('posX') || owned('posY')) ? '' : 'none';
+
+        // 运动轨迹区：坐标本质是 posX/posY，被接管时整区隐藏
+        const movesSec = $('#cf-moves-sec');
+        if (movesSec) movesSec.style.display = (owned('posX') || owned('posY')) ? 'none' : '';
     }
 
     // 主动保存当前预设的微调参数
@@ -1508,6 +2204,9 @@
         // 内置预设用快照；自定义预设用导入时记下的原值
         const orig = DEFAULT_PRESET_OPTIONS[preset.id] || (preset._origOptions || {});
         preset.options = Object.assign({}, orig);
+        // effects 同样还原到导入时的原值
+        if (preset._origEffects) preset.effects = JSON.parse(JSON.stringify(preset._origEffects));
+        syncActiveEffects();
         renderPresetParams();
         status(`↩ 已恢复「${preset.name}」默认参数`, 'ok');
     }
@@ -1524,10 +2223,11 @@
         if (!params.length) { box.style.display = 'none'; return; }
         box.style.display = '';
 
-        const opts = preset.options || {};
-
         function makeRow(param) {
-            const cur = (getByPath(opts, param.key) !== undefined) ? getByPath(opts, param.key) : param.default;
+            // 直接定位 preset.options / preset.effects 的真实字段，读写都落到本体
+            const target = paramTarget(preset, param.key);
+            const raw = getByPath(target.root, target.path);
+            const cur = (raw !== undefined) ? raw : param.default;
             const row = document.createElement('div');
             row.className = 'cf-row cf-preset-param-row';
             const label = document.createElement('label');
@@ -1544,7 +2244,7 @@
                     input.appendChild(o);
                 });
                 input.addEventListener('change', () => {
-                    setByPath(opts, param.key, input.value);
+                    setByPath(target.root, target.path, input.value);
                     status(`已调整「${param.label}」= ${input.value}（未保存）`, 'busy');
                 });
             } else if (param.type === 'color') {
@@ -1552,14 +2252,14 @@
                 input.type = 'color';
                 input.value = /^#[0-9a-fA-F]{6}$/.test(String(cur)) ? cur : '#ffffff';
                 input.addEventListener('input', () => {
-                    setByPath(opts, param.key, input.value);
+                    setByPath(target.root, target.path, input.value);
                 });
             } else if (param.type === 'checkbox') {
                 input = document.createElement('input');
                 input.type = 'checkbox';
                 input.checked = !!cur;
                 input.addEventListener('change', () => {
-                    setByPath(opts, param.key, input.checked);
+                    setByPath(target.root, target.path, input.checked);
                     status(`已调整「${param.label}」= ${input.checked}（未保存）`, 'busy');
                 });
             } else { // number 及其他默认按 number 处理
@@ -1572,7 +2272,7 @@
                 input.addEventListener('change', () => {
                     let v = parseFloat(input.value);
                     if (isNaN(v)) v = param.default;
-                    setByPath(opts, param.key, v);
+                    setByPath(target.root, target.path, v);
                     status(`已调整「${param.label}」= ${v}（未保存）`, 'busy');
                 });
             }
@@ -1605,20 +2305,22 @@
     function onPresetChange() {
         const sel = $('#cf-preset');
         activePresetId = sel ? sel.value : 'none';
-        storeSet('activePresetId', activePresetId);
+        // 激活预设带 effects 时，批量发送复用这些高级字段
+        const preset = getActivePreset();
+        activePresetEffects = (preset && preset.effects) ? preset.effects : null;
         updatePresetUI();
-        status(`已切换预设：${(getActivePreset() || {}).name || '无'}`, 'ok');
+        status(`已切换预设：${(preset || {}).name || '无'}${activePresetEffects ? '（含高级字段）' : ''}`, 'ok');
     }
 
     function importPreset() { $('#cf-preset-file').click(); }
 
-    // 把预设对象转成「可分享 JSON」：剥离内部字段，带上当前微调后的 options
+    // 把预设对象转成「可分享 JSON」：剥离内部字段，带上当前微调后的 options 与 effects
     function presetsToExport(list) {
         return list.map((p) => {
             const o = Object.assign({}, p.options);
             // 去掉运行时内部字段
             delete o.__seq;
-            return {
+            const out = {
                 id: p.id,
                 name: p.name,
                 desc: p.desc || '',
@@ -1626,6 +2328,10 @@
                 options: o,
                 params: (p.params || []).map((x) => ({ ...x })),
             };
+            // owns 是预设对编辑器字段的接管声明，导出时保留，保证开发者手写的声明不丢
+            if (Array.isArray(p.owns)) out.owns = p.owns.slice();
+            if (p.effects) out.effects = JSON.parse(JSON.stringify(p.effects));
+            return out;
         });
     }
 
@@ -1674,8 +2380,8 @@
         // 清理该预设保存过的参数
         try { localStorage.removeItem('cf_sub_presetOpt_' + p.id); } catch (e) {}
         activePresetId = 'none';
-        storeSet('activePresetId', 'none');
         refreshPresetSelect();
+        syncActiveEffects();
         status(`🗑 已删除「${p.name}」`, 'ok');
     }
 
@@ -1696,17 +2402,26 @@
                     if (!p.options || typeof p.options !== 'object') p.options = {};
                     if (!Array.isArray(p.params)) p.params = [];
                     p._origOptions = Object.assign({}, p.options);   // 记下 JSON 原值，供恢复默认
+                    p._origEffects = p.effects ? JSON.parse(JSON.stringify(p.effects)) : null;
                     const dup = customPresets.findIndex((x) => x.id === p.id);
                     if (dup >= 0) customPresets[dup] = p; else customPresets.push(p);
                     n++;
                 }
                 refreshPresetSelect();
+                // 导入后若当前激活预设带 effects，同步 activePresetEffects
+                syncActiveEffects();
                 status(`✅ 已导入 ${n} 个预设（仅本次会话，刷新后需重新导入）`, 'ok');
             } catch (e) {
                 status('预设 JSON 解析失败: ' + e.message, 'err');
             }
         };
         r.readAsText(file, 'utf-8');
+    }
+
+    // 根据当前激活预设同步 activePresetEffects（导入/删除后调用）
+    function syncActiveEffects() {
+        const preset = getActivePreset();
+        activePresetEffects = (preset && preset.effects) ? preset.effects : null;
     }
 
     function loadSub2File(file) {
@@ -1753,6 +2468,25 @@
             else { previewPaused = true; pauseVideo(); status('⏸ 预览已暂停', 'busy'); }
         });
         $('#cf-remove').addEventListener('click', removeSubs);
+        $('#cf-toggle-danmaku').addEventListener('click', () => switchPanelMode());
+        $('#cf-danmaku-text').addEventListener('input', updateManualCount);
+        $('#cf-danmaku-time').addEventListener('input', () => {
+            const v = $('#cf-danmaku-time').value;
+            if (v && parseManualTime(v) == null) status('⚠️ 时间格式不对，用 00:00:01.974 或秒数', 'err');
+        });
+        $('#cf-danmaku-pick').addEventListener('click', pickManualTime);
+        $('#cf-danmaku-preview').addEventListener('click', previewManual);
+        $('#cf-danmaku-send').addEventListener('click', sendManual);
+        // 高级编辑
+        $('#cf-fold-adv').addEventListener('click', toggleAdvFold);
+        $('#cf-move-add').addEventListener('click', addMove);
+        $('#cf-export-advanced').addEventListener('click', exportAdvancedPreset);
+        // 高级字段变化时即时写回 advancedConfig
+        ['#cf-adv-zindex', '#cf-adv-rx', '#cf-adv-ry', '#cf-adv-rz', '#cf-adv-sx', '#cf-adv-sy', '#cf-adv-blur', '#cf-adv-shx', '#cf-adv-shy', '#cf-adv-shb', '#cf-adv-shc', '#cf-adv-snb', '#cf-adv-sns', '#cf-adv-snc'].forEach((sel) => {
+            const el = $(sel);
+            if (el) el.addEventListener('input', readAdvancedConfig);
+        });
+        renderMoves();
         $('#cf-fold').addEventListener('click', toggleFold);
         $('#cf-sel-all').addEventListener('click', () => selectRange('all'));
         $('#cf-sel-none').addEventListener('click', () => selectRange('invert'));
@@ -1762,6 +2496,7 @@
         // 预设
         $('#cf-preset').addEventListener('change', onPresetChange);
         $('#cf-fold-preset').addEventListener('click', togglePresetFold);
+        $('#cf-fold-style').addEventListener('click', toggleStyleFold);
         $('#cf-import-preset').addEventListener('click', importPreset);
         $('#cf-export-current').addEventListener('click', exportCurrentPreset);
         $('#cf-export-all').addEventListener('click', exportAllPresets);
@@ -1839,7 +2574,6 @@
     // ============================================================
 
     function getNativePanel() { return $('.danmaku-g-launcher-panel'); }
-    function getNativeWrapper() { return $('.danmaku-g-launcher-panel-wrapper'); }
 
     // 面板是否处于展开状态（wrapper 带 unfold class）
     function isLauncherOpen() {
@@ -1942,6 +2676,8 @@
         #cf-sub-panel{display:flex;flex-direction:column;width:100%;max-width:100%;min-width:0;flex:1 1 0;min-height:0;height:auto;background:#fff;color:#666;font:12px/1.6 PingFangSC,-apple-system,Microsoft Yahei,sans-serif;overflow:hidden;box-sizing:border-box}
         #cf-sub-panel *{box-sizing:border-box;max-width:100%}
         #cf-sub-panel .cf-panel-body{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:14px}
+        #cf-sub-panel .cf-mode-bar{flex:none;display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #e5e5e5;background:#fafafa}
+        #cf-sub-panel .cf-mode-hint{font-size:12px;font-weight:500;color:#333;margin-right:auto}
         #cf-sub-panel .cf-sec{border-bottom:1px solid #e5e5e5;padding-bottom:14px}
         #cf-sub-panel .cf-sec:last-child{border-bottom:none;padding-bottom:0}
         #cf-sub-panel .cf-sec-title{position:relative;font-weight:500;font-size:14px;color:#333;line-height:16px;margin:0 0 10px}
@@ -1950,6 +2686,17 @@
         #cf-sub-panel .cf-drop:hover{border-color:#fd4c5d;background:#fff5f5}
         #cf-sub-panel .cf-drop-icon{font-size:26px}
         #cf-sub-panel .cf-drop-hint{font-size:11px;color:#999;margin-top:2px}
+        /* 弹幕模式输入框（仿原生 danmaku-g-input） */
+        #cf-sub-panel .cf-danmaku-input-wrap{position:relative}
+        #cf-sub-panel .cf-danmaku-input{width:100%;height:62px;padding:8px;border:1px solid #e5e5e5;border-radius:3px;background:#fff;color:rgba(0,0,0,.65);font-size:14px;line-height:1.5;outline:none;resize:none;box-sizing:border-box;transition:border-color .3s}
+        #cf-sub-panel .cf-danmaku-input:focus{border-color:#fd4c5d}
+        #cf-sub-panel .cf-danmaku-count{position:absolute;right:8px;bottom:6px;font-size:11px;color:#999;pointer-events:none}
+        #cf-sub-panel .cf-danmaku-tip{font-size:11px;color:#999;margin-top:6px}
+        #cf-sub-panel .cf-adv-3{display:inline-flex;align-items:center;gap:2px;font-size:11px;color:#666}
+        #cf-sub-panel .cf-adv-3 input{width:48px}
+        #cf-sub-panel .cf-move-item{border:1px solid #e5e5e5;border-radius:4px;padding:6px;margin-bottom:6px;background:#fafafa}
+        #cf-sub-panel .cf-move-item .cf-row{margin-bottom:4px}
+        #cf-sub-panel .cf-move-del{background:#fff;border:1px solid #f5222d;color:#f5222d;border-radius:3px;font-size:11px;padding:1px 8px;cursor:pointer;float:right}
         #cf-sub-panel .cf-list{border:1px solid #e5e5e5;border-radius:3px;max-height:200px;overflow-y:auto;background:#fff}
         #cf-sub-panel .cf-empty{text-align:center;color:#999;padding:18px;font-size:12px}
         #cf-sub-panel .cf-item{display:flex;align-items:center;gap:8px;padding:5px 10px;border-bottom:1px solid #f0f0f0;cursor:pointer;font-size:12px}
@@ -1969,6 +2716,10 @@
         #cf-sub-panel .cf-row select:focus,#cf-sub-panel .cf-row input:focus{border-color:#fd4c5d}
         #cf-sub-panel .cf-row input[type=number]{width:56px}
         #cf-sub-panel .cf-row input[type=color]{width:36px;height:22px;padding:0;border:1px solid #e5e5e5;background:#fff;cursor:pointer}
+        /* 宽输入框：带元素选择器（input.cf-wide-input），优先级与 input[type=number] 同级，
+           靠声明顺序压过默认 56px 窄框，避免长数字/时间值被裁剪 */
+        #cf-sub-panel .cf-row input.cf-wide-input{width:112px}
+        #cf-sub-panel .cf-owner-disabled{opacity:.45;pointer-events:none;background:#f5f5f5}
         #cf-sub-panel .cf-gap{flex:0 0 6px}
         #cf-sub-panel .cf-chk{display:inline-flex;align-items:center;gap:4px;cursor:pointer;color:#666;font-size:12px}
         #cf-sub-panel .cf-chk input{accent-color:#fd4c5d}
@@ -2004,6 +2755,16 @@
         #cf-sub-panel .cf-status.ok{background:#f6ffed;color:#52c41a}
         #cf-sub-panel .cf-status.err{background:#fff1f0;color:#f5222d}
         #cf-sub-panel .cf-status.busy{background:#fffbe6;color:#faad14}
+        /* 导出预设的「可调字段」勾选层 */
+        .cf-adjust-picker{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:2147483000;display:flex;align-items:center;justify-content:center}
+        .cf-adjust-dlg{width:300px;max-height:70vh;display:flex;flex-direction:column;background:#fff;border-radius:6px;box-shadow:0 6px 24px rgba(0,0,0,.2);overflow:hidden}
+        .cf-adjust-title{font-size:14px;font-weight:600;color:#333;padding:12px 14px 4px}
+        .cf-adjust-sub{font-size:11px;color:#999;padding:0 14px 8px;line-height:1.5}
+        .cf-adjust-tools{display:flex;gap:6px;padding:0 14px 6px}
+        .cf-adjust-body{flex:1;overflow-y:auto;padding:0 14px 8px;display:flex;flex-direction:column;gap:4px}
+        .cf-adjust-item{display:flex;align-items:center;gap:6px;font-size:12px;color:#666;cursor:pointer;padding:2px 0}
+        .cf-adjust-item input{accent-color:#fd4c5d;cursor:pointer}
+        .cf-adjust-foot{display:flex;justify-content:flex-end;gap:6px;padding:10px 14px;border-top:1px solid #f0f0f0;background:#fafafa}
         /* 原生面板标题栏“高级弹幕”旁的切换入口（标题栏改为 flex，按钮靠右） */
         .danmaku-g-launcher-panel .panel-title{display:flex;align-items:center;justify-content:space-between}
         #cf-entry-group{margin-left:auto;display:inline-flex;align-items:center;gap:8px}
@@ -2029,6 +2790,7 @@
             ['绑定事件', bindEvents],
             ['建立入口', setupEntry],
         ];
+        syncActiveEffects();   // 初始化后同步 effects（激活预设若带 effects 则应用）
         for (const [name, fn] of steps) {
             try {
                 fn();

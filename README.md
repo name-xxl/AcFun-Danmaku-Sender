@@ -14,6 +14,8 @@
 - **样式设置**：字体/字号/颜色/描边/投影/锚点/位置、时间偏移、样式来源（ASS 自带 or 编辑器统一）；
 - **预设系统**：内置竖排/KTV/双排竖排，支持导入自定义 JSON 预设、参数面板微调、导出/备份/删除；
 - **声明式引擎**：`declarative` transform 让 JSON 自由定义「拆分 + 网格布局 + 流向 + 高亮」，可组合出竖排、双排竖排、横排 KTV、网格字幕等；
+- **高级编辑**：层级/旋转/缩放/模糊/投影/外发光/多段运动，每段动作支持独立的拉伸、旋转、缓动；
+- **编辑器字段接管**：预设可声明 `owns`，接管位置/颜色等字段后编辑器自动禁用，避免"改了没反应"；
 - **视频内预览**：预览单条或全部，复用 A 站原生高级弹幕渲染器在画面上实时渲染；
 - **批量发送**：发送间隔可自定义，返回 danmakuId；
 - **发送验证**：全片扫描高级弹幕池，确认弹幕真实入库。
@@ -43,10 +45,12 @@
 
 要点：
 
-- 预设 JSON 顶层：`id / name / desc / transform / options / params`；
+- 预设 JSON 顶层：`id / name / desc / transform / options / params / owns / effects`；
 - `transform` 有 5 种：`none`、`chars-vertical`、`chars-karaoke`、`multi-lang`、`declarative`；
 - `declarative` 是声明式引擎，自由度最高，用 `split / flow / columns / rows / step / base / highlight` 描述排版；
-- `params` 支持 `number / select / color / checkbox` 四种控件，可用 `group` 分组、`key` 用点路径访问嵌套参数。
+- `params` 支持 `number / select / color / checkbox` 四种控件，可用 `group` 分组、`key` 用点路径访问嵌套参数（`effects.` 前缀可直达 effects 字段）；
+- `owns` 声明接管哪些编辑器字段（位置/颜色等），接管后编辑器自动禁用；
+- `effects` 叠加高级样式：旋转/缩放/模糊/投影/外发光/多段运动（含每段拉伸旋转与缓动）。
 
 ## 已知环境事实（重要）
 
