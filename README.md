@@ -39,7 +39,7 @@
 
 ## 预设开发
 
-详见 [`预设开发文档.md`](./预设开发文档.md)，示例见 [`示例预设.json`](./示例预设.json)。
+详见 [`preset-development-guide.md`](./preset-development-guide.md)，示例见 [`example-presets.json`](./example-presets.json)。
 
 要点：
 
@@ -67,8 +67,9 @@
 | 文件 | 说明 |
 |---|---|
 | `acfun-danmaku-sender.user.js` | 主脚本 |
-| `示例预设.json` | 预设示例（竖排/KTV/双语/双排竖排/网格KTV） |
-| `预设开发文档.md` | 预设 JSON 编写文档 |
+| `example-presets.json` | 预设示例（竖排/KTV/双语/双排竖排/网格KTV） |
+| `preset-development-guide.md` | 预设 JSON 编写文档 |
+| `API.md` | 接口细节（发送/查询/验证/extData 结构/枚举/错误码） |
 
 ## 注意事项
 
