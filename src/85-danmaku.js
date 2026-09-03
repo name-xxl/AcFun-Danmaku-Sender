@@ -469,8 +469,8 @@
                     moves: advancedConfig.moves.map((m) => Object.assign({}, m)),
                 },
             };
-            downloadJson(name + '.json', preset);
-            status(`📤 已导出高级预设 ${name}.json（可调字段 ${params.length} 个）`, 'ok');
+            // 弹窗补全命名/描述/作者后再导出 JSON（作者默认填当前 A 站昵称 + uid）
+            openExportDialog(preset);
         });
     }
 

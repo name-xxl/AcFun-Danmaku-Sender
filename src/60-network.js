@@ -26,13 +26,14 @@
         const v = getVideoInfo();
         if (!v || !v.videoId) throw new Error('未获取到视频信息');
 
+        const colorInt = parseInt(model.wordStyle.color.slice(1), 16);
         const params = [
             ['body', model.content],
             ['videoId', v.videoId],
             ['position', model.startTime],
             ['mode', 1],                        // 高级弹幕固定 MOVE=1
             ['size', model.wordStyle.size],
-            ['color', parseInt(model.wordStyle.color.slice(1), 16) || 16777215],
+            ['color', isNaN(colorInt) ? 16777215 : colorInt],
             ['type', v.contentType],
             ['id', v.contentId],
             ['danmakuType', 1],
@@ -177,5 +178,19 @@
                 || document.cookie.match(/(?:^|;\s*)userId=(\d+)/);
             return m ? m[1] : '';
         } catch (e) { return ''; }
+    }
+
+    // 当前登录用户的署名（A 站昵称 + uid，格式「昵称(uid)」），供预设导出的作者栏自动填写。
+    // 昵称在 cookie 的 ac_username（URI 编码）；两项都拿不到时返回空串，让用户手填。
+    function getAcfunAuthor() {
+        let name = '';
+        try {
+            const m = document.cookie.match(/(?:^|;\s*)ac_username=([^;]*)/);
+            if (m && m[1]) name = decodeURIComponent(m[1]);
+        } catch (e) {}
+        const uid = String(getUid() || '');
+        if (name && uid) return name + '(' + uid + ')';
+        if (name) return name;
+        return uid ? 'uid:' + uid : '';
     }
 

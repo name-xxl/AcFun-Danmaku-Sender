@@ -33,6 +33,15 @@ for (const f of FILES) {
     out += fs.readFileSync(p, 'utf8');
 }
 
+// 版本一致性校验：@version（Tampermonkey 识别、运行时日志读的就是它）必须与
+// package.json 一致，防止发版时只改一处
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+const vm = out.match(/@version\s+([^\s]+)/);
+if (!vm || vm[1] !== pkg.version) {
+    console.error(`版本不一致：header @version=${vm ? vm[1] : '(未找到)'} vs package.json=${pkg.version}，请同步后再构建`);
+    process.exit(1);
+}
+
 fs.writeFileSync(DIST_FILE, out, 'utf8');
 console.log('构建完成 -> ' + DIST_FILE);
 console.log('拼接 ' + FILES.length + ' 个文件，' + out.length + ' 字符');

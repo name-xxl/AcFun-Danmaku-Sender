@@ -60,6 +60,7 @@
         $('#cf-preset').addEventListener('change', onPresetChange);
         $('#cf-fold-preset').addEventListener('click', togglePresetFold);
         $('#cf-fold-style').addEventListener('click', toggleStyleFold);
+        $('#cf-open-dev-panel').addEventListener('click', openDevPanel);
         $('#cf-import-preset').addEventListener('click', importPreset);
         $('#cf-export-current').addEventListener('click', exportCurrentPreset);
         $('#cf-export-all').addEventListener('click', exportAllPresets);

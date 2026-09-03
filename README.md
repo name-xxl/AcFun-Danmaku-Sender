@@ -83,9 +83,12 @@ node build.js
 - 预设 JSON 顶层：`id / name / desc / transform / options / params / owns / effects`；
 - `transform` 有 5 种：`none`、`chars-vertical`、`chars-karaoke`、`multi-lang`、`declarative`；
 - `declarative` 是声明式引擎，自由度最高，用 `split / flow / columns / rows / step / base / highlight` 描述排版；
-- `params` 支持 `number / select / color / checkbox` 四种控件，可用 `group` 分组、`key` 用点路径访问嵌套参数（`effects.` 前缀可直达 effects 字段）；
+- `params` 支持 `number / select / color / checkbox` 四种控件，可用 `group` 分组、`key` 用点路径访问嵌套参数（`effects.` 前缀可直达 effects 字段）；参数 key 建议带引擎/阶段前缀防冲突，只有刻意跨阶段联动的共享参数（如 `step.x`/`step.time`）才用裸名；
+- 预设导入时会校验 `params`：缺 key / 重复 key / type 拼错 / 引擎组合未声明的参数会提醒（只提醒不阻断，预设声明少于引擎参数是合法用法）；
+- 效果开发面板保存的预设自带各激活引擎的参数声明，保存后可在预设面板直接微调；开发面板的草稿（引擎组合/参数/预览文本）自动持久化，关面板或刷新后重新打开即还原；
 - `owns` 声明接管哪些编辑器字段（位置/颜色等），接管后编辑器自动禁用；
-- `effects` 叠加高级样式：旋转/缩放/模糊/投影/外发光/多段运动（含每段拉伸旋转与缓动）。
+- `effects` 叠加高级样式：旋转/缩放/模糊/投影/外发光/多段运动（含每段拉伸旋转与缓动）；
+- 预设 JSON 可带 `author` 字段署名；「导出当前」「导出为预设」会先弹窗补全命名/描述/作者（作者默认自动填当前登录的 A 站昵称 + uid），确认后导出为 JSON 文件，接收方通过「导入预设」使用。
 
 ## 已知环境事实（重要）
 

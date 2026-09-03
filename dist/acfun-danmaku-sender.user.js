@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AcFun 弹幕字幕发送器 (H5版高级弹幕)
 // @namespace    https://github.com/acfun-danmaku-sender
-// @version      6.2.0
+// @version      6.3.0
 // @description  上传 SRT/ASS/LRC 字幕文件，按时间轴自动发送高级弹幕。仿原生面板，替换 A 站高级弹幕编辑器并提供视频预览。
 // @author       name_xxl
 // @match        *://www.acfun.cn/v/ac*
@@ -74,28 +74,27 @@
         {
             id: 'karaoke', name: 'KTV 唱词', desc: '逐字扫光，唱到的字变亮',
             transform: 'chars-karaoke',
-            options: { layout: 'single', charWidth: 2.8, rowY: 78, topY: 74, bottomY: 82, startX: 8, startXTop: 8, startXBottom: 8, sungColor: KTV_SUNG_COLOR, unsungColor: KTV_UNSUNG_COLOR },
+            options: { dualDir: 'none', dualX: 0, dualY: 8, charWidth: 2.8, rowY: 78, startX: 8, sungColor: KTV_SUNG_COLOR, unsungColor: KTV_UNSUNG_COLOR },
             params: [
-                { key: 'layout', label: '排版', type: 'select', choices: [
-                    { value: 'single', label: '单排' },
-                    { value: 'dual', label: '双排（上下交替）' },
+                { key: 'dualDir', label: '跨句分栏', type: 'select', group: '布局', choices: [
+                    { value: 'none', label: '不分栏' },
+                    { value: 'vertical', label: '上下分栏（双排）' },
+                    { value: 'horizontal', label: '左右分栏' },
                 ]},
+                { key: 'dualX', label: '次句偏移X', type: 'number', min: -100, max: 100, step: 1, group: '布局' },
+                { key: 'dualY', label: '次句偏移Y', type: 'number', min: -100, max: 100, step: 1, group: '布局' },
                 { key: 'charWidth', label: '字宽', type: 'number', min: 1.5, max: 6, step: 0.1 },
-                { key: 'startX', label: '单排起点X', type: 'number', min: 0, max: 100, step: 1 },
-                { key: 'rowY', label: '单排行Y', type: 'number', min: 0, max: 100, step: 1 },
-                { key: 'startXTop', label: '上排起点X', type: 'number', min: 0, max: 100, step: 1 },
-                { key: 'topY', label: '上排Y', type: 'number', min: 0, max: 100, step: 1 },
-                { key: 'startXBottom', label: '下排起点X', type: 'number', min: 0, max: 100, step: 1 },
-                { key: 'bottomY', label: '下排Y', type: 'number', min: 0, max: 100, step: 1 },
+                { key: 'startX', label: '起点X', type: 'number', min: 0, max: 100, step: 1 },
+                { key: 'rowY', label: '行Y', type: 'number', min: 0, max: 100, step: 1 },
                 { key: 'sungColor', label: '唱到色', type: 'color' },
                 { key: 'unsungColor', label: '待唱色', type: 'color' },
             ],
         },
         {
-            id: 'vertical-dual', name: '双排竖排', desc: '竖排文字左右两列交替，基于声明式引擎',
+            id: 'vertical-dual', name: '双排竖排', desc: '竖排，屏幕放不下自动分栏，短句单列',
             transform: 'declarative',
             options: {
-                split: 'chars', flow: 'col-first', columns: 2, rows: 1,
+                split: 'chars', flow: 'col-first', span: 0,
                 step: { x: 6, y: 1.8, time: 60 },
                 base: { x: 40, y: 70 },
                 color: '#ffffff',
@@ -106,8 +105,7 @@
                     { value: 'col-first', label: '先竖后横' },
                     { value: 'row-first', label: '先横后竖' },
                 ]},
-                { key: 'columns', label: '列数', type: 'number', min: 1, max: 8, step: 1, group: '布局' },
-                { key: 'rows', label: '行数', type: 'number', min: 1, max: 8, step: 1, group: '布局' },
+                { key: 'span', label: '每行/列字数(0=自动)', type: 'number', min: 0, max: 20, step: 1, group: '布局' },
                 { key: 'step.x', label: '列间距X', type: 'number', min: 0, max: 50, step: 0.5, group: '间距' },
                 { key: 'step.y', label: '行间距Y', type: 'number', min: 0, max: 20, step: 0.1, group: '间距' },
                 { key: 'step.time', label: '逐字延迟(ms)', type: 'number', min: 0, max: 500, step: 10, group: '间距' },
@@ -174,6 +172,16 @@
         return m ? (parseInt(m[1], 16) << 16) + (parseInt(m[2], 16) << 8) + parseInt(m[3], 16) : 0xffffff;
     }
     function rgbToHex(n) { return '#' + (n >>> 0).toString(16).padStart(6, '0'); }
+
+    // HTML 转义：把用户可控文本安全插入 innerHTML / 属性（防 <img onerror=...> 注入）
+    function escapeHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
 
     function t2ms(s) {
         s = (s || '').replace(',', '.');
@@ -249,10 +257,12 @@
                 styleName = parts[1] ? parts[1].trim() : 'Default';
             }
             body = body.replace(/\{[^}]*\}/g, '').replace(/\\N/g, '\n').replace(/\\n/g, '\n').trim();
-            const first = body.split('\n')[0].trim();
             const ms = ass2ms(st);
-            if (ms !== null && first) {
-                out.push({ time: ms, text: first, style: parseASSStyle(styles[styleName] || {}, first) });
+            // 保留全部行：{\N} 硬换行的多行对白不再只取首行。
+            // 文本里的 \n 与 SRT 多行一致，后续由拆分引擎的「按行拆」处理；
+            // 不拆时整段作为一条弹幕原样发送。
+            if (ms !== null && body) {
+                out.push({ time: ms, text: body, style: parseASSStyle(styles[styleName] || {}) });
             }
         }
         return out.sort((a, b) => a.time - b.time);
@@ -649,12 +659,13 @@
         return buildModel({ time: timeMs, text: text }, cfg, durationMs);
     }
 
-    // 智能分词：
-    //   - 中文、日文假名、韩文、全角符号 → 按单字拆
-    //   - 字母/数字连续串 → 按整词拆（覆盖英/法/德/西/葡/越南/俄/希腊）
-    //   - 半角标点（, . ! ? ' " 等）→ 贴附到前一个 token，不单独占宽
-    // 宽度用 canvas 实测（传入 fontSize/fontFamily），中文单字为基准 1。
-    // 返回 [{ text, w }]，w 为相对宽度（相对于一个中文全角字）。
+    // ============================================================
+    //  文本拆分（Unicode 属性正则，覆盖中英日韩 + emoji + 所有字母数字）
+    //  字符分类：
+    //    'space' 空白（跳过） | 'word' 字母/数字（按词）
+    //    'char' 中日韩/假名/韩文/emoji（按字） | 'punct' 标点/符号（贴附）
+    //  宽度模式 widthMode：'uniform' 等宽 w=1 | 'actual' canvas 实测宽度
+    // ============================================================
     let _measureCtx = null;
     function measureTextPx(text, fontSize, fontFamily) {
         try {
@@ -666,230 +677,400 @@
         }
     }
 
-    function tokenize(text, fontSize, fontFamily) {
+    function charKind(t) {
+        if (/^\s+$/u.test(t)) return 'space';
+        if (/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Emoji_Presentation}]$/u.test(t)) return 'char';
+        if (/^[\p{L}\p{Nd}]+$/u.test(t)) return 'word';
+        return 'punct';
+    }
+
+    function calcW(text, fs, ff, unit, widthMode) {
+        return (widthMode === 'actual') ? Math.max(0.3, measureTextPx(text, fs, ff) / unit) : 1;
+    }
+
+    // 按字拆：每个字符一个片段（英文按字母），空白跳过，标点单独
+    function splitChars(text, fontSize, fontFamily, widthMode) {
         const fs = fontSize || 24;
         const ff = fontFamily || 'SimHei';
-        // 单字（全宽字符）：中日韩 + 日文假名 + 韩文 + 全角标点/符号
-        const CJK_RE = /^[一-鿿぀-ヿ가-힣　-〿＀-￯]$/;
-        const WORD_RE = /^[A-Za-z0-9À-ɏḀ-ỿЀ-ӿͰ-Ͽ]+$/;
+        const unit = measureTextPx('国', fs, ff) || fs;
+        return Array.from(text)
+            .filter((ch) => !/^\s+$/u.test(ch))
+            .map((ch) => ({ text: ch, w: calcW(ch, fs, ff, unit, widthMode) }));
+    }
+
+    // 按词拆：中日韩/假名/韩文/emoji 按字，字母数字按词，标点贴附到前一个片段，空白跳过
+    function splitWords(text, fontSize, fontFamily, widthMode) {
+        const fs = fontSize || 24;
+        const ff = fontFamily || 'SimHei';
+        const unit = measureTextPx('国', fs, ff) || fs;
+        const re = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Emoji_Presentation}]|(?:(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Emoji_Presentation}])[\p{L}\p{Nd}])+|[\s\S]/gu;
         const raw = [];
-        const re = /[一-鿿぀-ヿ가-힣　-〿＀-￯]|[A-Za-z0-9À-ɏḀ-ỿЀ-ӿͰ-Ͽ]+|[^\s]/g;
         let m;
         while ((m = re.exec(text))) {
             const t = m[0];
-            raw.push({ text: t, isWord: WORD_RE.test(t), isCJK: CJK_RE.test(t) });
+            if (/^\s+$/u.test(t)) continue;
+            raw.push({ text: t, kind: charKind(t) });
         }
-        // 后处理：半角标点贴到前一个 token
         const out = [];
         for (const tok of raw) {
-            if (!tok.isWord && !tok.isCJK && out.length) {
+            if (tok.kind === 'punct' && out.length) {
                 out[out.length - 1].text += tok.text;
             } else {
-                out.push({ text: tok.text, w: 1 });
+                out.push(tok);
             }
         }
-        // 以单个全角字（"国"）为基准，计算每个 token 的相对宽度
-        const unit = measureTextPx('国', fs, ff) || fs;
         for (const t of out) {
-            t.w = Math.max(0.3, measureTextPx(t.text, fs, ff) / unit);
+            t.w = calcW(t.text, fs, ff, unit, widthMode);
         }
         return out;
     }
 
-    const TRANSFORMS = {
-        // 竖排：拆单字纵向堆叠
-        'chars-vertical'(sub, cfg, dur, o) {
-            const chars = Array.from((sub.text || '').trim());
-            if (!chars.length) return [];
-            const gap = num(o.gap, 1.8);
-            const delay = num(o.charDelay, 60);
-            const sx = num(o.startX, 50);
-            const sy = num(o.startY, 72);
-            const down = o.direction !== 'up';
-            const out = [];
-            chars.forEach((ch, i) => {
-                const c = Object.assign({}, cfg);
-                c.posX = sx;
-                c.posY = clamp(sy + (down ? i : -i) * gap, 1, 99);
-                out.push(modelFrom(c, ch, sub.time + i * delay, dur));
+    // ============================================================
+    //  效果引擎：5 阶段管道（拆分 → 布局 → 着色 → 时序 → 运动）
+    //  每个阶段一个「引擎库」，预设通过「组合」自由搭配各阶段引擎。
+    //  每个引擎自带 { label 中文名, desc 说明, params 参数声明, apply 处理函数 }，
+    //  开发面板据此自动渲染下拉 + 参数表单；新增效果 = 往对应阶段注册一个新引擎。
+    //
+    //  参数 key 命名约定（防扁平 options 键冲突）：
+    //    新引擎的参数尽量带自己的前缀（如 'vertical.gap'）；只有刻意跨阶段联动的
+    //    共享参数才用裸名（如 step.x/step.y/step.time 由布局+时序共用、
+    //    dualDir/dualX/dualY 由布局+跨句分栏共用）。导入侧会校验并提醒未声明 key。
+    //
+    //  片段 fragment：拆分 + 布局的产物 { text, w?, posX?, posY?, lang?, time? }
+    //  层 layer：着色 + 时序的产物 = fragment + { color, kind?, time?, duration? }
+    //    kind: 'base'（底层）/ 'main'（主层），供扫光类时序区分
+    // ============================================================
+
+    const STAGES = [
+        { key: 'split', label: '拆分' },
+        { key: 'layout', label: '布局' },
+        { key: 'color', label: '着色' },
+        { key: 'timing', label: '时序' },
+        { key: 'motion', label: '运动' },
+    ];
+
+    // 参数声明辅助：type 支持 number | select | color | checkbox | text
+    const pnum = (key, label, min, max, step, def) => ({ key, label, type: 'number', min, max, step, default: def });
+    const psel = (key, label, choices, def) => ({ key, label, type: 'select', choices, default: def });
+    const pcol = (key, label, def) => ({ key, label, type: 'color', default: def });
+    const pchk = (key, label, def) => ({ key, label, type: 'checkbox', default: def });
+    const ptext = (key, label, def, placeholder) => ({ key, label, type: 'text', default: def, placeholder });
+
+    // 解析逗号分隔的数字列表（用于「列X列表 / 行Y列表」等），空返回 null
+    function parseNumList(s) {
+        if (s == null || String(s).trim() === '') return null;
+        const arr = String(s).split(',').map((v) => parseFloat(v.trim())).filter((v) => isFinite(v));
+        return arr.length ? arr : null;
+    }
+
+    // 按点路径读参数（统一「扁平/嵌套」读法）：缺失或 null 回落到 def。
+    // 数字参数再经 num() 归一；选择/字符串/颜色参数直接取 def。
+    function pv(params, path, def) {
+        const v = getByPath(params, path);
+        return (v === undefined || v === null) ? def : v;
+    }
+
+    // 跨句分栏参数声明（供各布局引擎复用）：
+    //   dualDir: none 单排/单列 | vertical 上下分栏 | horizontal 左右分栏（是否分栏 + 方向提示）
+    //   dualX / dualY: 第二句（偶数句）相对第一句的 X/Y 偏移，独立可调（可上下、左右、对角）
+    const DUAL_DIR_PARAMS = [
+        psel('dualDir', '跨句分栏', [{ value: 'none', label: '不分栏' }, { value: 'vertical', label: '上下分栏' }, { value: 'horizontal', label: '左右分栏' }], 'none'),
+        pnum('dualX', '次句偏移X', -100, 100, 1, 0),
+        pnum('dualY', '次句偏移Y', -100, 100, 1, 0),
+    ];
+
+    // 宽度模式参数（供拆分引擎复用）：actual 实际宽度（紧凑）| uniform 等宽（整齐）
+    const WIDTH_MODE_PARAM = psel('widthMode', '宽度模式', [{ value: 'actual', label: '实际宽度' }, { value: 'uniform', label: '等宽' }], 'actual');
+
+    // 跨句分栏：第 1、3、5…句在原点，第 2、4、6…句偏移 (dualX, dualY)。
+    // 在布局完成后调用；同时标记 ctx.advanceable = 是否跨句分栏。
+    function applySeqOffset(frags, params, ctx) {
+        const dualDir = pv(params, 'dualDir', 'none');
+        if (dualDir === 'none') { ctx.advanceable = false; return frags; }
+        const isEven = (ctx.seq != null) ? (ctx.seq % 2 === 0) : false;
+        if (isEven) {
+            const dx = num(pv(params, 'dualX'), 0);
+            const dy = num(pv(params, 'dualY'), 0);
+            frags.forEach((f) => {
+                if (f.posX != null) f.posX += dx;
+                if (f.posY != null) f.posY += dy;
             });
-            return out;
+        }
+        ctx.advanceable = true;
+        return frags;
+    }
+
+    // 跨句衔接（独立步骤）：统一给「底层 base 层」设置时间。
+    // 若跨句分栏 + 有上一句，底层提前到上一句开始时间并延长覆盖；否则底层本句常驻。
+    // 与「时序类型」无关——扫光/高亮产生底层后，任何时序都能正确跨句候场。
+    function applyBaseAdvance(layers, ctx) {
+        let baseStart = ctx.sub.time;
+        let baseDur = ctx.dur;
+        if (ctx.advanceable && ctx.prevTime != null && ctx.prevTime < ctx.sub.time) {
+            baseStart = ctx.prevTime;
+            baseDur = Math.round(ctx.dur + (ctx.sub.time - ctx.prevTime));
+        }
+        layers.forEach((l) => {
+            if (l.kind === 'base') { l.time = baseStart; l.duration = baseDur; }
+        });
+        return layers;
+    }
+
+    // 着色：把一个片段的「暗色底 + 亮色主」两层结构抽出来，供扫光/声明式高亮复用
+    function makeTwoLayer(frags, baseColor, mainColor) {
+        const layers = [];
+        frags.forEach((f) => { layers.push({ ...f, color: baseColor, kind: 'base' }); });
+        frags.forEach((f) => { layers.push({ ...f, color: mainColor, kind: 'main' }); });
+        return layers;
+    }
+
+    // 时序：把主层按 idx*delay 依次延后；decreasing=true 时每层时长递减（扫光），否则固定 ctx.dur（逐字延迟）
+    function staggerMain(layers, ctx, delay, decreasing) {
+        let idx = 0;
+        layers.forEach((l) => {
+            if (l.kind === 'base') return;
+            l.time = ctx.sub.time + Math.round(idx * delay);
+            l.duration = decreasing ? Math.max(200, Math.round(ctx.dur - idx * delay)) : ctx.dur;
+            idx++;
+        });
+        return layers;
+    }
+
+    const ENGINES = {
+        // 拆分：字幕文本 → 片段[]
+        split: {
+            'none': { label: '不拆', desc: '整句一条弹幕', params: [], apply(ctx) { return [{ text: ctx.text }]; } },
+            'chars': { label: '按字拆', desc: '每个字符一个片段（英文按字母、emoji/日文/韩文按字）', params: [WIDTH_MODE_PARAM], apply(ctx, params) {
+                return splitChars(ctx.text, ctx.cfg.size, ctx.cfg.font, pv(params, 'widthMode', 'actual'));
+            } },
+            'words': { label: '按词拆', desc: '中日韩/emoji 按字，字母数字按词，标点贴附', params: [WIDTH_MODE_PARAM], apply(ctx, params) {
+                return splitWords(ctx.text, ctx.cfg.size, ctx.cfg.font, pv(params, 'widthMode', 'actual'));
+            } },
+            'lines': { label: '按行拆', desc: '每行一个片段', params: [], apply(ctx) { return ctx.text.split(/\n/).filter(Boolean).map((l) => ({ text: l, w: 1 })); } },
+            'bilingual': { label: '双语', desc: '主字幕 + 第二语言字幕', params: [], apply(ctx) {
+                const frags = [{ text: ctx.text, lang: 'main' }];
+                const m2 = nearestSub2(ctx.sub.time);
+                if (m2) frags.push({ text: m2.text, lang: 'sub', time: m2.time });
+                return frags;
+            } },
+            'declarative': { hidden: true, label: '可配置拆分', desc: '按参数决定拆分方式（兼容声明式）', params: [
+                psel('split', '拆分方式', [{ value: 'chars', label: '按字' }, { value: 'words', label: '按词' }, { value: 'lines', label: '按行' }, { value: 'none', label: '不拆' }], 'chars'),
+            ], apply(ctx, params) {
+                const s = pv(params, 'split', 'chars');
+                if (s === 'none') return [{ text: ctx.text }];
+                if (s === 'lines') return ctx.text.split(/\n/).filter(Boolean).map((l) => ({ text: l }));
+                if (s === 'chars') return splitChars(ctx.text, ctx.cfg.size, ctx.cfg.font, 'actual');
+                return splitWords(ctx.text, ctx.cfg.size, ctx.cfg.font, 'actual');
+            } },
         },
 
-        // KTV：底层暗色铺开 + 亮色逐字扫光覆盖
-        // layout: 'single' 单排 | 'dual' 双排（奇数句上行、偶数句下行，交替滚动）
-        // 双排时：本句暗色层提前到「上一句开始时间」出现（覆盖上一句+本句），
-        // 亮色层从本句开始扫光——形成“上一句在唱、下一句在下面等着”的卡拉OK效果。
-        'chars-karaoke'(sub, cfg, dur, o, seq, prevTime) {
-            const tokens = tokenize((sub.text || '').trim(), cfg.size, cfg.font);
-            if (!tokens.length) return [];
-            const cw = num(o.charWidth, 2.8);
-            const sung = o.sungColor || KTV_SUNG_COLOR;
-            const unsung = o.unsungColor || KTV_UNSUNG_COLOR;
-            const perToken = Math.max(120, dur / tokens.length);
-
-            const layout = o.layout || 'single';
-            const isDual = layout === 'dual';
-            let startX = num(o.startX, 8);
-            let rowY = num(o.rowY, 78);
-            if (isDual) {
-                const topY = num(o.topY, 74);
-                const bottomY = num(o.bottomY, 82);
-                const startXTop = num(o.startXTop, num(o.startX, 8));
-                const startXBottom = num(o.startXBottom, num(o.startX, 8));
-                const isOdd = (seq != null) ? (seq % 2 === 1) : true;
-                rowY = isOdd ? topY : bottomY;
-                startX = isOdd ? startXTop : startXBottom;
-            }
-
-            let baseStart = sub.time;
-            let baseDur = dur;
-            if (isDual && prevTime != null && prevTime < sub.time) {
-                baseStart = prevTime;
-                baseDur = Math.round(dur + (sub.time - prevTime));
-            }
-
-            // 按实际宽度累加 X（英文词按字符数加权），避免中英间距不均
-            const xs = [];
-            let acc = 0;
-            for (const t of tokens) { xs.push(startX + acc); acc += t.w * cw; }
-
-            const out = [];
-            tokens.forEach((tk, i) => {
-                const c = Object.assign({}, cfg);
-                c.posX = xs[i];
-                c.posY = rowY;
-                c.color = hexToRgb(unsung);
-                out.push(modelFrom(c, tk.text, baseStart, baseDur));
-            });
-            tokens.forEach((tk, i) => {
-                const c = Object.assign({}, cfg);
-                c.posX = xs[i];
-                c.posY = rowY;
-                c.color = hexToRgb(sung);
-                const t = sub.time + Math.round(i * perToken);
-                const remain = Math.max(200, Math.round(dur - i * perToken));
-                out.push(modelFrom(c, tk.text, t, remain));
-            });
-            return out;
-        },
-
-        // 多语：主字幕 + 第二语言字幕同屏两行
-        'multi-lang'(sub, cfg, dur, o) {
-            const out = [];
-            const gap = num(o.langGap, 5);
-            const mainColor = o.mainColor ? hexToRgb(o.mainColor) : cfg.color;
-            const subColor = o.subColor ? hexToRgb(o.subColor) : 0xffd700;
-            const mainY = num(o.mainY, 72);
-            const subY = num(o.subY, mainY + gap);
-
-            const c1 = Object.assign({}, cfg); c1.posY = mainY; c1.color = mainColor;
-            out.push(modelFrom(c1, sub.text, sub.time, dur));
-
-            // 找时间轴最近匹配的第二语言字幕
-            const m2 = nearestSub2(sub.time);
-            if (m2) {
-                const c2 = Object.assign({}, cfg); c2.posY = subY; c2.color = subColor;
-                out.push(modelFrom(c2, m2.text, m2.time, dur));
-            }
-            return out;
-        },
-
-        // ============================================================
-        // 声明式 transform：由 JSON 的 rules 描述「如何把一句字幕拆成多个弹幕」
-        // rules 结构：
-        //   split    : chars | words | lines | none   —— 拆分方式
-        //   flow     : row-first | col-first          —— 网格填充方向（先横后竖 / 先竖后横）
-        //   columns  : 每行列数（默认 1）
-        //   rows     : 每列行数（默认 1）
-        //   step     : { x, y, time }                  —— 相邻片段的 X/Y 增量（屏幕 %）与时间增量（ms）
-        //   base     : { x, y }                        —— 第一个片段的起点（屏幕 %）
-        //   color    : 片段颜色（#rrggbb）
-        //   highlight: { enabled, color, baseColor }   —— 逐字高亮（底层 baseColor 铺开 + 亮色 color 扫光）
-        // ============================================================
-        'declarative'(sub, cfg, dur, o, seq, prevTime) {
-            const rules = o || {};
-            const text = (sub.text || '').trim();
-            let pieces = [];
-            let weights = null;
-            switch (rules.split) {
-                case 'none': pieces = [text]; break;
-                case 'lines': pieces = text.split(/\n/).filter(Boolean); break;
-                case 'chars': case 'words': default: {
-                    // chars / words 都走智能分词：中文按字、英文按词，带宽度权重
-                    const toks = tokenize(text, cfg.size, cfg.font);
-                    pieces = toks.map((t) => t.text);
-                    weights = toks.map((t) => t.w);
-                    break;
+        // 布局：片段[] → 片段[]（写入 posX/posY）
+        layout: {
+            'none': { label: '跟随样式', desc: '位置由样式区/位置 X/Y 决定', params: [], apply(frags) { return frags; } },
+            'vertical': { label: '竖排', desc: '单字纵向堆叠；可跨句左右分栏', params: [
+                psel('direction', '方向', [{ value: 'down', label: '向下' }, { value: 'up', label: '向上' }], 'down'),
+                pnum('gap', '字距', 0.5, 6, 0.1, 1.8),
+                pnum('startX', '起点X', 0, 100, 1, 50),
+                pnum('startY', '起点Y', 0, 100, 1, 72),
+                ...DUAL_DIR_PARAMS,
+            ], apply(frags, params) {
+                const gap = num(pv(params, 'gap'), 1.8);
+                const sx = num(pv(params, 'startX'), 50);
+                const sy = num(pv(params, 'startY'), 72);
+                const down = pv(params, 'direction', 'down') !== 'up';
+                frags.forEach((f, i) => { f.posX = sx; f.posY = clamp(sy + (down ? i : -i) * gap, 1, 99); });
+                return frags;
+            } },
+            'horizontal': { label: '横排', desc: '从左到右按宽度累加；可跨句上下分栏', params: [
+                pnum('charWidth', '字宽', 1.5, 6, 0.1, 2.8),
+                pnum('startX', '起点X', 0, 100, 1, 8),
+                pnum('rowY', '行Y', 0, 100, 1, 78),
+                ...DUAL_DIR_PARAMS,
+            ], apply(frags, params) {
+                const cw = num(pv(params, 'charWidth'), 2.8);
+                const startX = num(pv(params, 'startX'), 8);
+                const rowY = num(pv(params, 'rowY'), 78);
+                let acc = 0;
+                frags.forEach((f) => { f.posX = startX + acc; f.posY = rowY; acc += (f.w || 1) * cw; });
+                return frags;
+            } },
+            'grid': { label: '网格', desc: '按字数自动分栏：竖排每列、横排每行，字数根据屏幕空间自动算（0=自动）', params: [
+                psel('flow', '流向', [{ value: 'col-first', label: '先竖后横' }, { value: 'row-first', label: '先横后竖' }], 'col-first'),
+                pnum('span', '每行/列字数(0=自动)', 0, 20, 1, 0),
+                pnum('step.x', '列间距X', 0, 50, 0.5, 0),
+                pnum('step.y', '行间距Y', 0, 20, 0.1, 0),
+                pnum('base.x', '起点X', 0, 100, 1, 50),
+                pnum('base.y', '起点Y', 0, 100, 1, 50),
+                ptext('colsX', '列X列表', '', '留空等距，如 40,46,52'),
+                ptext('rowsY', '行Y列表', '', '留空等距，如 70,71.8'),
+                ...DUAL_DIR_PARAMS,
+            ], apply(frags, params) {
+                const flow = pv(params, 'flow', 'col-first');
+                const sx = num(pv(params, 'step.x'), 0);
+                const sy = num(pv(params, 'step.y'), 0);
+                const bx = num(pv(params, 'base.x'), 50);
+                const by = num(pv(params, 'base.y'), 50);
+                // 每行/列字数：填正数用固定值；0=自动按屏幕可用空间算（竖排看高度，横排看宽度）
+                let span = num(pv(params, 'span'), 0) | 0;
+                if (span <= 0) {
+                    span = (flow === 'col-first')
+                        ? Math.max(1, Math.floor((99 - by) / Math.max(sy, 0.1)) + 1)
+                        : Math.max(1, Math.floor((99 - bx) / Math.max(sx, 0.1)) + 1);
                 }
-            }
-            if (!pieces.length) return [];
-
-            const flow = rules.flow || 'row-first';
-            const columns = Math.max(1, num(rules.columns, 1) | 0);
-            const rows = Math.max(1, num(rules.rows, 1) | 0);
-            const sx = num(rules.step && rules.step.x, 0);
-            const sy = num(rules.step && rules.step.y, 0);
-            const st = num(rules.step && rules.step.time, 0);
-            const bx = num(rules.base && rules.base.x, 50);
-            const by = num(rules.base && rules.base.y, 50);
-            const color = rules.color ? hexToRgb(rules.color) : cfg.color;
-            const hl = rules.highlight || {};
-            const hlOn = !!hl.enabled;
-
-            // 计算每个片段在网格中的行列与位置；智能分词时横向按宽度权重累加
-            const place = (i) => {
-                let r, c;
-                if (flow === 'col-first') { r = i % rows; c = Math.floor(i / rows); }
-                else { c = i % columns; r = Math.floor(i / columns); }
-                let x;
-                if (weights && flow === 'row-first') {
-                    // row-first：该行内前 c 个 token 的宽度累计 × 间距
-                    const rowStart = r * columns;
-                    let acc = 0;
-                    for (let k = rowStart; k < i; k++) acc += weights[k];
-                    x = bx + acc * sx;
-                } else {
-                    x = bx + c * sx;
+                const colsX = parseNumList(pv(params, 'colsX'));
+                const rowsY = parseNumList(pv(params, 'rowsY'));
+                const hasWeight = frags.some((f) => f.w != null);
+                // col-first + 有宽度（智能分词）时，按「每列最大宽度」累加列起点，避免英文词比列间距宽而重叠
+                let colStartX = null;
+                if (!colsX && hasWeight && flow === 'col-first') {
+                    const colMax = [];
+                    frags.forEach((f, i) => { const c = Math.floor(i / span); colMax[c] = Math.max(colMax[c] || 0, f.w || 1); });
+                    colStartX = colMax.map((_, c) => {
+                        let acc = 0;
+                        for (let k = 0; k < c; k++) acc += (colMax[k] || 1);
+                        return bx + acc * sx;
+                    });
                 }
-                return {
-                    x: clamp(x, 0, 100),
-                    y: clamp(by + r * sy, 0, 100),
-                    t: sub.time + Math.round(i * st),
-                };
-            };
-
-            const out = [];
-            // 底层（仅高亮模式）：全部片段用 baseColor，整句存活（双排可提前候场）
-            if (hlOn) {
-                const baseColor = hl.baseColor ? hexToRgb(hl.baseColor) : 0x9aa0a6;
-                let baseStart = sub.time;
-                let baseDur = dur;
-                if (prevTime != null && prevTime < sub.time) { baseStart = prevTime; baseDur = Math.round(dur + (sub.time - prevTime)); }
-                pieces.forEach((p, i) => {
-                    const pos = place(i);
-                    const c = Object.assign({}, cfg);
-                    c.posX = pos.x; c.posY = pos.y; c.color = baseColor;
-                    out.push(modelFrom(c, p, baseStart, baseDur));
+                frags.forEach((f, i) => {
+                    let r, c;
+                    if (flow === 'col-first') { r = i % span; c = Math.floor(i / span); }
+                    else { c = i % span; r = Math.floor(i / span); }
+                    let x;
+                    if (colsX && colsX[c] != null) {
+                        x = colsX[c];
+                    } else if (colStartX) {
+                        x = colStartX[c];
+                    } else if (hasWeight && flow === 'row-first') {
+                        const rowStart = r * span;
+                        let acc = 0;
+                        for (let k = rowStart; k < i; k++) acc += (frags[k].w || 1);
+                        x = bx + acc * sx;
+                    } else {
+                        x = bx + c * sx;
+                    }
+                    const y = (rowsY && rowsY[r] != null) ? rowsY[r] : (by + r * sy);
+                    f.posX = clamp(x, 0, 100);
+                    f.posY = clamp(y, 0, 100);
                 });
-            }
+                return frags;
+            } },
+            'bilingual': { label: '上下两行', desc: '主行在上、副行在下', params: [
+                pnum('langGap', '行间距', 0, 20, 1, 5),
+                pnum('mainY', '主行Y', 0, 100, 1, 72),
+            ], apply(frags, params) {
+                const gap = num(pv(params, 'langGap'), 5);
+                const mainY = num(pv(params, 'mainY'), 72);
+                const subY = num(pv(params, 'subY'), mainY + gap);
+                frags.forEach((f) => { f.posY = (f.lang === 'sub') ? subY : mainY; });
+                return frags;
+            } },
+        },
 
-            // 主体层：每个片段（高亮模式下为亮色扫光）
-            const mainColor = hlOn ? (hl.color ? hexToRgb(hl.color) : 0xffd700) : color;
-            pieces.forEach((p, i) => {
-                const pos = place(i);
-                const c = Object.assign({}, cfg);
-                c.posX = pos.x; c.posY = pos.y; c.color = mainColor;
-                if (hlOn) {
-                    const remain = Math.max(200, Math.round(dur - i * st));
-                    out.push(modelFrom(c, p, pos.t, remain));
-                } else {
-                    out.push(modelFrom(c, p, pos.t, dur));
+        // 着色：片段[] → 层[]（写入 color；扫光类 1 片段 → 2 层，先底层后主层）
+        color: {
+            'single': { label: '单色', desc: '使用样式区颜色', params: [], apply(frags, params, ctx) { return frags.map((f) => ({ ...f, color: ctx.cfg.color })); } },
+            'karaoke': { label: '扫光', desc: '底层暗色 + 亮色扫光（两层）', params: [
+                pcol('sungColor', '唱到色', '#ffd700'),
+                pcol('unsungColor', '待唱色', '#9aa0a6'),
+            ], apply(frags, params) {
+                const sung = hexToRgb(pv(params, 'sungColor', KTV_SUNG_COLOR));
+                const unsung = hexToRgb(pv(params, 'unsungColor', KTV_UNSUNG_COLOR));
+                return makeTwoLayer(frags, unsung, sung);
+            } },
+            'bilingual': { label: '双语双色', desc: '主行/副行不同色', params: [
+                pcol('mainColor', '主色', '#ffffff'),
+                pcol('subColor', '副色', '#ffd700'),
+            ], apply(frags, params, ctx) {
+                const mc = pv(params, 'mainColor', '');
+                const sc = pv(params, 'subColor', '');
+                const mainColor = mc ? hexToRgb(mc) : ctx.cfg.color;
+                const subColor = sc ? hexToRgb(sc) : 0xffd700;
+                return frags.map((f) => ({ ...f, color: (f.lang === 'sub') ? subColor : mainColor }));
+            } },
+            'declarative': { hidden: true, label: '单色/高亮', desc: '普通单色，或逐字高亮（两层）', params: [
+                pcol('color', '文字色', '#ffffff'),
+                pchk('highlight.enabled', '逐字高亮', false),
+                pcol('highlight.color', '高亮色', '#ffd700'),
+                pcol('highlight.baseColor', '底色', '#9aa0a6'),
+            ], apply(frags, params, ctx) {
+                const hl = pv(params, 'highlight', {});
+                if (hl.enabled) {
+                    const baseColor = hl.baseColor ? hexToRgb(hl.baseColor) : 0x9aa0a6;
+                    const mainColor = hl.color ? hexToRgb(hl.color) : 0xffd700;
+                    return makeTwoLayer(frags, baseColor, mainColor);
                 }
-            });
-            return out;
+                const c = pv(params, 'color', '');
+                return frags.map((f) => ({ ...f, color: c ? hexToRgb(c) : ctx.cfg.color }));
+            } },
+        },
+
+        // 时序：层[] → 层[]（只处理 main 主层；base 底层的时间由 applyBaseAdvance 统一跨句候场）
+        timing: {
+            'uniform': { label: '统一', desc: '所有层同一时刻出现', params: [], apply(layers, params, ctx) {
+                layers.forEach((l) => {
+                    if (l.kind === 'base') return;
+                    l.time = (l.time != null) ? l.time : ctx.sub.time;
+                    l.duration = ctx.dur;
+                });
+                return layers;
+            } },
+            'stagger': { label: '逐字延迟', desc: '主层依次延后出现', params: [
+                pnum('charDelay', '逐字延迟(ms)', 0, 500, 10, 60),
+            ], apply(layers, params, ctx) {
+                return staggerMain(layers, ctx, num(pv(params, 'charDelay'), 60), false);
+            } },
+            'sweep': { label: '扫光时序', desc: '主层逐字递减（唱到哪亮到哪）', params: [
+                pnum('step.time', '逐字步长(ms)', 0, 2000, 10, 0),
+            ], apply(layers, params, ctx) {
+                const mainCount = layers.filter((l) => l.kind !== 'base').length;
+                const stepTime = (pv(params, 'step.time') != null) ? num(pv(params, 'step.time'), 0) : Math.max(120, ctx.dur / Math.max(1, mainCount));
+                return staggerMain(layers, ctx, stepTime, true);
+            } },
+            'declarative': { hidden: true, label: '声明式时序', desc: '逐字延迟，或高亮扫光', params: [
+                pnum('step.time', '逐字延迟(ms)', 0, 500, 10, 0),
+            ], apply(layers, params, ctx) {
+                const hl = pv(params, 'highlight', {});
+                const st = num(pv(params, 'step.time'), 0);
+                return staggerMain(layers, ctx, st, !!hl.enabled);
+            } },
+        },
+
+        // 运动：层[] → 层[]（写入运动参数；当前仅 none，未来扩展缩放/跳跳等）
+        motion: {
+            'none': { label: '静止', desc: '无额外运动', params: [], apply(layers) { return layers; } },
         },
     };
+
+    // 组合：transform 名 → 各阶段引擎名（向后兼容旧的 transform 字段）
+    const COMPOSITIONS = {
+        'chars-vertical': { split: 'chars', layout: 'vertical', color: 'single', timing: 'stagger', motion: 'none' },
+        'chars-karaoke': { split: 'words', layout: 'horizontal', color: 'karaoke', timing: 'sweep', motion: 'none' },
+        'multi-lang': { split: 'bilingual', layout: 'bilingual', color: 'bilingual', timing: 'uniform', motion: 'none' },
+        'declarative': { split: 'declarative', layout: 'grid', color: 'declarative', timing: 'declarative', motion: 'none' },
+    };
+
+    // 管道执行器：按组合依次跑 5 个阶段，产出 model[]
+    // yOffset：给所有片段 posY 统一加一个偏移（双语 LRC 副语言下移用），0 表示不偏移
+    function runPipeline(sub, cfg, durationMs, comp, params, seq, prevTime, yOffset) {
+        const ctx = { sub, cfg, dur: durationMs, seq, prevTime, text: (sub.text || '').trim(), advanceable: false };
+        let frags = ENGINES.split[comp.split].apply(ctx, params);
+        frags = ENGINES.layout[comp.layout].apply(frags, params, ctx);
+        frags = applySeqOffset(frags, params, ctx);   // 跨句分栏（seq 奇偶 → 位置偏移）
+        if (yOffset) {
+            frags.forEach((f) => { if (f.posY != null) f.posY = clamp(f.posY + yOffset, 1, 99); });
+        }
+        let layers = ENGINES.color[comp.color].apply(frags, params, ctx);
+        layers = ENGINES.timing[comp.timing].apply(layers, params, ctx);
+        layers = applyBaseAdvance(layers, ctx);   // 跨句衔接：底层提前候场（与时序类型无关）
+        layers = ENGINES.motion[comp.motion].apply(layers, params, ctx);
+        return layers.map((l) => {
+            const c = Object.assign({}, cfg);
+            if (l.posX != null) c.posX = l.posX;
+            if (l.posY != null) c.posY = l.posY;
+            if (l.color != null) c.color = l.color;
+            return modelFrom(c, l.text, l.time, l.duration);
+        });
+    }
 
     // 在第二语言字幕里找时间最接近的一条（阈值内）
     function nearestSub2(timeMs) {
@@ -902,6 +1083,17 @@
         return (best && bestDiff <= 1500) ? best : null;
     }
 
+    // 跑管道并做安全回退：展开为空或抛错时回退为单条原样 model
+    function safeRun(sub, cfg, durationMs, comp, options, seq, prevTime, yOffset) {
+        try {
+            const models = runPipeline(sub, cfg, durationMs, comp, options || {}, seq, prevTime, yOffset);
+            return models.length ? models : [buildModel(sub, cfg, durationMs)];
+        } catch (e) {
+            log('预设展开失败，回退原样', e);
+            return [buildModel(sub, cfg, durationMs)];
+        }
+    }
+
     // 把一条字幕展开成多个 model
     // seq 为该字幕在选中序列里的序号（从 1 起，供双排等跨句布局使用）
     // prevTime 为上一句的开始时间（ms），供双排 KTV 让下一句暗色层提前出现
@@ -911,35 +1103,43 @@
             if (bilingualMode === 'main' || bilingualMode === 'sub') {
                 const text = bilingualMode === 'sub' ? sub.sub : sub.main;
                 sub = Object.assign({}, sub, { text, main: null, sub: null });
-            } else { // auto：上下两行
-                return expandBilingual(sub, cfg, durationMs);
+            } else { // auto：上下两行，主/副语言都走当前预设管线
+                return expandBilingual(sub, cfg, durationMs, seq, prevTime);
             }
         }
 
         const preset = getActivePreset();
-        if (!preset || preset.transform === 'none' || !TRANSFORMS[preset.transform]) {
+        const comp = preset ? (preset.composition || COMPOSITIONS[preset.transform]) : null;
+        if (!preset || !comp) {
             return [buildModel(sub, cfg, durationMs)];
         }
-        try {
-            const models = TRANSFORMS[preset.transform](sub, cfg, durationMs, preset.options || {}, seq, prevTime);
-            return models.length ? models : [buildModel(sub, cfg, durationMs)];
-        } catch (e) {
-            log('预设展开失败，回退原样', e);
-            return [buildModel(sub, cfg, durationMs)];
-        }
+        return safeRun(sub, cfg, durationMs, comp, preset.options, seq, prevTime);
     }
 
-    // 双语 LRC：主语言在上、副语言在下，副语言用金色区分
-    function expandBilingual(sub, cfg, durationMs) {
-        const baseY = num(cfg.posY, 72);
-        const mainCfg = Object.assign({}, cfg);
-        mainCfg.posY = clamp(baseY, 1, 94);
-        const subCfg = Object.assign({}, cfg);
-        subCfg.posY = clamp(baseY + 5, 1, 99);
-        subCfg.color = 0xffd700;
-        const m1 = buildModel({ time: sub.time, text: sub.main }, mainCfg, durationMs);
-        const m2 = buildModel({ time: sub.time, text: sub.sub }, subCfg, durationMs);
-        return [m1, m2];
+    // 双语 LRC（auto）：主语言在上、副语言在下，副语言整体下移 LANG_GAP 并着金色。
+    // 有激活预设时，主/副语言各自走一遍当前预设管线（竖排/KTV/声明式等都对双语生效）；
+    // 无预设（组合为空）时回退为简单上下两行。
+    function expandBilingual(sub, cfg, durationMs, seq, prevTime) {
+        const preset = getActivePreset();
+        const comp = preset ? (preset.composition || COMPOSITIONS[preset.transform]) : null;
+        if (!comp) {
+            const baseY = num(cfg.posY, 72);
+            const mainCfg = Object.assign({}, cfg);
+            mainCfg.posY = clamp(baseY, 1, 94);
+            const subCfg = Object.assign({}, cfg);
+            subCfg.posY = clamp(baseY + 5, 1, 99);
+            subCfg.color = 0xffd700;
+            return [
+                buildModel({ time: sub.time, text: sub.main }, mainCfg, durationMs),
+                buildModel({ time: sub.time, text: sub.sub }, subCfg, durationMs),
+            ];
+        }
+        const LANG_GAP = 5;
+        const mainModels = safeRun({ time: sub.time, text: sub.main }, cfg, durationMs, comp, preset.options, seq, prevTime, 0);
+        const subModels = safeRun({ time: sub.time, text: sub.sub }, cfg, durationMs, comp, preset.options, seq, prevTime, LANG_GAP);
+        // 副语言整体着色为金色，与主语言区分
+        subModels.forEach((m) => { m.wordStyle.color = rgbToHex(0xffd700); });
+        return mainModels.concat(subModels);
     }
 
     function calcDurationMs(idx) {
@@ -1003,13 +1203,14 @@
         const v = getVideoInfo();
         if (!v || !v.videoId) throw new Error('未获取到视频信息');
 
+        const colorInt = parseInt(model.wordStyle.color.slice(1), 16);
         const params = [
             ['body', model.content],
             ['videoId', v.videoId],
             ['position', model.startTime],
             ['mode', 1],                        // 高级弹幕固定 MOVE=1
             ['size', model.wordStyle.size],
-            ['color', parseInt(model.wordStyle.color.slice(1), 16) || 16777215],
+            ['color', isNaN(colorInt) ? 16777215 : colorInt],
             ['type', v.contentType],
             ['id', v.contentId],
             ['danmakuType', 1],
@@ -1156,6 +1357,20 @@
         } catch (e) { return ''; }
     }
 
+    // 当前登录用户的署名（A 站昵称 + uid，格式「昵称(uid)」），供预设导出的作者栏自动填写。
+    // 昵称在 cookie 的 ac_username（URI 编码）；两项都拿不到时返回空串，让用户手填。
+    function getAcfunAuthor() {
+        let name = '';
+        try {
+            const m = document.cookie.match(/(?:^|;\s*)ac_username=([^;]*)/);
+            if (m && m[1]) name = decodeURIComponent(m[1]);
+        } catch (e) {}
+        const uid = String(getUid() || '');
+        if (name && uid) return name + '(' + uid + ')';
+        if (name) return name;
+        return uid ? 'uid:' + uid : '';
+    }
+
     // ============================================================
     //  预览（复用原生高级弹幕渲染器）
     // ============================================================
@@ -1216,7 +1431,7 @@
         // 时长每次略不同，绕过渲染器“按内容去重”导致同条字幕连续预览无反应的问题
         const dur = Math.max(500, baseDur - (previewSeq % 3));
         // 按激活预设展开成多个 model（seq 从 1 起，保证与预览全部/发送的奇偶一致）
-        const models = expandSub(sub, cfg, dur, idx + 1);
+        const models = expandSub(sub, cfg, dur, 1);
         log('👁 展开出 ' + models.length + ' 个 model，首条 startTime=' + (models[0] && models[0].startTime));
         models.forEach((m) => {
             m.id = 'cf-prev-' + (++previewSeq);
@@ -1301,6 +1516,55 @@
         }, 600);
     }
 
+    // 多句预览：把一组字幕（每句独立）按顺序衔接、一次注入视频。
+    // 供开发面板预览「两句同时出现」的跨句效果（如 KTV 双排、竖排 KTV）使用。
+    // subList: [{ time, text, duration? }]，每句用 seq（k+1）与 prevTime（前一句时间）衔接。
+    function previewMulti(subList, durMs) {
+        const p = getPlayer();
+        if (!p || typeof p.loadDanmakuG !== 'function') {
+            status('⚠️ 高级弹幕渲染器未就绪，请先点弹幕输入框内第三个按钮展开一次', 'err');
+            return Promise.resolve();
+        }
+        if (!ensureRenderer(p)) {
+            status('⚠️ 高级弹幕渲染器初始化失败，请展开一次原生高级弹幕编辑器', 'err');
+            return Promise.resolve();
+        }
+        if (!subList || !subList.length) { status('没有可预览的内容', 'err'); return Promise.resolve(); }
+
+        expirePreviews();
+        const models = [];
+        subList.forEach((s, k) => {
+            const cfg = cfgFor(s);
+            const prevTime = k > 0 ? subList[k - 1].time : null;
+            const dur = (s.duration != null) ? s.duration : durMs;
+            const expanded = expandSub(s, cfg, dur, k + 1, prevTime);
+            expanded.forEach((m) => {
+                m.id = 'cf-prevm-' + (++previewSeq) + '-' + k;
+                m.__seq = previewSeq;
+                m.user = String(getUid() || '');
+                previewRefs.push(m);
+                models.push(m);
+            });
+        });
+        if (!models.length) { status('预览展开为空', 'err'); return Promise.resolve(); }
+
+        pauseVideo();
+        seekTo(Math.max(0, subList[0].time + timeOffset - 400));
+        return new Promise((resolve) => {
+            setTimeout(() => {
+                try {
+                    p.loadDanmakuG(models);
+                    status(`▶ 预览：${subList.length} 句 → ${models.length} 条弹幕`, 'busy');
+                } catch (e) {
+                    log('多句预览失败', e);
+                    status('⚠️ 预览失败，请确认已展开高级弹幕编辑器', 'err');
+                }
+                playVideo();
+                resolve();
+            }, 600);
+        });
+    }
+
     // ============================================================
     //  UI（仿原生面板壳）
     // ============================================================
@@ -1356,11 +1620,11 @@
             </div>
 
             <div class="cf-sec" id="cf-preset-sec">
-                <p class="cf-sec-title">预设<button type="button" class="cf-fold-btn" id="cf-fold-preset">折叠</button><button type="button" class="cf-fold-btn" id="cf-import-preset">📥 导入</button><input type="file" id="cf-preset-file" accept=".json" style="display:none"></p>
+                <p class="cf-sec-title">预设<button type="button" class="cf-fold-btn" id="cf-open-dev-panel">🎨 开发</button><button type="button" class="cf-fold-btn" id="cf-fold-preset">折叠</button><button type="button" class="cf-fold-btn" id="cf-import-preset">📥 导入</button><input type="file" id="cf-preset-file" accept=".json" style="display:none"></p>
                 <div id="cf-preset-body">
                     <div class="cf-row">
                         <label>预设</label>
-                        <select id="cf-preset">${getAllPresets().map((p) => `<option value="${p.id}"${p.id === activePresetId ? ' selected' : ''}>${p.name}</option>`).join('')}</select>
+                        <select id="cf-preset">${getAllPresets().map((p) => `<option value="${escapeHtml(p.id)}"${p.id === activePresetId ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}</select>
                     </div>
                     <div class="cf-preset-desc" id="cf-preset-desc"></div>
                     <div class="cf-preset-params" id="cf-preset-params"></div>
@@ -1554,7 +1818,7 @@
             return `<div class="cf-item${st ? ' ' + st : ''}" data-i="${i}">
                 <input type="checkbox" class="cf-chk-item"${s.selected ? ' checked' : ''} data-i="${i}">
                 <span class="cf-t">${fmt(s.time)}</span>
-                <span class="cf-c" title="${s.text.replace(/"/g, '&quot;')}">${s.text}</span>
+                <span class="cf-c" title="${escapeHtml(s.text)}">${escapeHtml(s.text)}</span>
                 <span class="cf-s ${stCls[st] || ''}">${stIcon[st] || '○'}</span>
             </div>`;
         }).join('');
@@ -2220,8 +2484,8 @@
                     moves: advancedConfig.moves.map((m) => Object.assign({}, m)),
                 },
             };
-            downloadJson(name + '.json', preset);
-            status(`📤 已导出高级预设 ${name}.json（可调字段 ${params.length} 个）`, 'ok');
+            // 弹窗补全命名/描述/作者后再导出 JSON（作者默认填当前 A 站昵称 + uid）
+            openExportDialog(preset);
         });
     }
 
@@ -2233,7 +2497,7 @@
         const sel = $('#cf-preset');
         if (!sel) return;
         const cur = activePresetId;
-        sel.innerHTML = getAllPresets().map((p) => `<option value="${p.id}"${p.id === cur ? ' selected' : ''}>${p.name}</option>`).join('');
+        sel.innerHTML = getAllPresets().map((p) => `<option value="${escapeHtml(p.id)}"${p.id === cur ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
         updatePresetUI();
     }
 
@@ -2277,10 +2541,23 @@
         posY: '#cf-posy',
     };
 
-    // 取当前预设接管的字段集合：preset.owns 显式声明优先，否则按 transform 默认
+    // 按 composition（引擎组合）推导接管的字段：布局引擎非 none 接管位置，着色引擎非 single 接管颜色
+    function ownsForComposition(comp) {
+        if (!comp) return [];
+        const owns = [];
+        if (comp.layout && comp.layout !== 'none') {
+            if (comp.layout === 'bilingual') owns.push('posY');   // 上下两行只控制 Y
+            else owns.push('posX', 'posY');
+        }
+        if (comp.color && comp.color !== 'single') owns.push('color');
+        return owns;
+    }
+
+    // 取当前预设接管的字段集合：preset.owns 显式声明优先，其次按 composition，最后按 transform 默认
     function getPresetOwns(preset) {
         if (!preset) return [];
         if (Array.isArray(preset.owns)) return preset.owns;
+        if (preset.composition) return ownsForComposition(preset.composition);
         return TRANSFORM_OWNS[preset.transform] || [];
     }
 
@@ -2349,6 +2626,62 @@
         status(`↩ 已恢复「${preset.name}」默认参数`, 'ok');
     }
 
+    // 参数控件构造器（预设参数面板与效果开发面板共用）：
+    //   param   —— 参数声明 { key,label,type,choices?,min?,max?,step?,default?,placeholder? }
+    //   get     —— 读当前值；set —— 写回值；onChange —— 变化后回调（color 用 input 事件连续触发，不回调）
+    function buildParamControl(param, get, set, onChange) {
+        const row = document.createElement('div');
+        row.className = 'cf-row';
+        const label = document.createElement('label');
+        label.textContent = param.label || param.key;
+        row.appendChild(label);
+
+        const raw = get();
+        const val = (raw !== undefined && raw !== null) ? raw : param.default;
+        let input;
+        if (param.type === 'select') {
+            input = document.createElement('select');
+            (param.choices || []).forEach((c) => {
+                const o = document.createElement('option');
+                o.value = c.value; o.textContent = c.label;
+                if (String(val) === String(c.value)) o.selected = true;
+                input.appendChild(o);
+            });
+            input.addEventListener('change', () => { set(input.value); if (onChange) onChange(input.value); });
+        } else if (param.type === 'color') {
+            input = document.createElement('input');
+            input.type = 'color';
+            input.value = /^#[0-9a-fA-F]{6}$/.test(String(val)) ? val : '#ffffff';
+            input.addEventListener('input', () => set(input.value));
+        } else if (param.type === 'checkbox') {
+            input = document.createElement('input');
+            input.type = 'checkbox';
+            input.checked = !!val;
+            input.addEventListener('change', () => { set(input.checked); if (onChange) onChange(input.checked); });
+        } else if (param.type === 'text') {
+            input = document.createElement('input');
+            input.type = 'text';
+            input.placeholder = param.placeholder || '';
+            input.value = (val !== undefined && val !== null) ? val : '';
+            input.addEventListener('change', () => { set(input.value); if (onChange) onChange(input.value); });
+        } else { // number 及其他默认按 number 处理
+            input = document.createElement('input');
+            input.type = 'number';
+            if (param.min !== undefined) input.min = param.min;
+            if (param.max !== undefined) input.max = param.max;
+            if (param.step !== undefined) input.step = param.step;
+            input.value = (val === undefined || val === null) ? '' : val;
+            input.addEventListener('change', () => {
+                let v = parseFloat(input.value);
+                if (isNaN(v)) v = (param.default !== undefined ? param.default : 0);
+                set(v);
+                if (onChange) onChange(v);
+            });
+        }
+        row.appendChild(input);
+        return row;
+    }
+
     // 按激活预设的 params 声明，动态生成参数编辑控件。
     // 支持 param.group 字段：同组参数聚在一起，组间显示分组标题，
     // 让开发者能通过 JSON 控制面板的分组与顺序，参数多了也不乱。
@@ -2364,57 +2697,11 @@
         function makeRow(param) {
             // 直接定位 preset.options / preset.effects 的真实字段，读写都落到本体
             const target = paramTarget(preset, param.key);
-            const raw = getByPath(target.root, target.path);
-            const cur = (raw !== undefined) ? raw : param.default;
-            const row = document.createElement('div');
-            row.className = 'cf-row cf-preset-param-row';
-            const label = document.createElement('label');
-            label.textContent = param.label || param.key;
-            row.appendChild(label);
-
-            let input;
-            if (param.type === 'select') {
-                input = document.createElement('select');
-                (param.choices || []).forEach((c) => {
-                    const o = document.createElement('option');
-                    o.value = c.value; o.textContent = c.label;
-                    if (String(cur) === String(c.value)) o.selected = true;
-                    input.appendChild(o);
-                });
-                input.addEventListener('change', () => {
-                    setByPath(target.root, target.path, input.value);
-                    status(`已调整「${param.label}」= ${input.value}（未保存）`, 'busy');
-                });
-            } else if (param.type === 'color') {
-                input = document.createElement('input');
-                input.type = 'color';
-                input.value = /^#[0-9a-fA-F]{6}$/.test(String(cur)) ? cur : '#ffffff';
-                input.addEventListener('input', () => {
-                    setByPath(target.root, target.path, input.value);
-                });
-            } else if (param.type === 'checkbox') {
-                input = document.createElement('input');
-                input.type = 'checkbox';
-                input.checked = !!cur;
-                input.addEventListener('change', () => {
-                    setByPath(target.root, target.path, input.checked);
-                    status(`已调整「${param.label}」= ${input.checked}（未保存）`, 'busy');
-                });
-            } else { // number 及其他默认按 number 处理
-                input = document.createElement('input');
-                input.type = 'number';
-                if (param.min !== undefined) input.min = param.min;
-                if (param.max !== undefined) input.max = param.max;
-                if (param.step !== undefined) input.step = param.step;
-                input.value = cur;
-                input.addEventListener('change', () => {
-                    let v = parseFloat(input.value);
-                    if (isNaN(v)) v = param.default;
-                    setByPath(target.root, target.path, v);
-                    status(`已调整「${param.label}」= ${v}（未保存）`, 'busy');
-                });
-            }
-            row.appendChild(input);
+            const row = buildParamControl(param,
+                () => getByPath(target.root, target.path),
+                (v) => setByPath(target.root, target.path, v),
+                (v) => status(`已调整「${param.label}」= ${v}（未保存）`, 'busy'));
+            row.classList.add('cf-preset-param-row');
             return row;
         }
 
@@ -2468,7 +2755,11 @@
             };
             // owns 是预设对编辑器字段的接管声明，导出时保留，保证开发者手写的声明不丢
             if (Array.isArray(p.owns)) out.owns = p.owns.slice();
+            // 作者署名（导出弹窗填写，默认 A 站昵称 + uid）
+            if (p.author) out.author = p.author;
             if (p.effects) out.effects = JSON.parse(JSON.stringify(p.effects));
+            // composition 是效果开发面板创作的引擎组合，导出时保留
+            if (p.composition) out.composition = JSON.parse(JSON.stringify(p.composition));
             return out;
         });
     }
@@ -2490,12 +2781,57 @@
         }
     }
 
-    // 导出单个预设（当前选中的，含内置与自定义）
+    // 导出弹窗：补全命名/描述/作者后导出为 JSON 文件（接收方用「导入预设」使用，不涉及脚本改动）。
+    // preset 为要导出的预设对象：列表里的预设会把填写的元信息写回本体（下次导出记住），
+    // 临时构造的预设（如高级编辑导出）仅用于本次导出。作者默认填当前 A 站昵称 + uid。
+    function openExportDialog(preset) {
+        if (!preset) { status('没有可导出的预设', 'err'); return; }
+        const old = $('#cf-export-panel');
+        if (old) old.remove();
+        const mask = document.createElement('div');
+        mask.id = 'cf-export-panel';
+        mask.className = 'cf-dev-panel-mask';
+        mask.innerHTML = `
+            <div class="cf-dev-dlg">
+                <p class="cf-dev-title">📤 导出预设（JSON）</p>
+                <p class="cf-dev-sub">补全分享信息后导出 JSON 文件；导入方通过「📥 导入预设」使用</p>
+                <div class="cf-exp-row"><label>名称</label><input type="text" id="cf-exp-name" placeholder="预设名称（必填）"></div>
+                <div class="cf-exp-row"><label>描述</label><textarea id="cf-exp-desc" rows="2" placeholder="预设效果说明（可选）"></textarea></div>
+                <div class="cf-exp-row"><label>作者</label><input type="text" id="cf-exp-author" placeholder="默认填当前登录的 A 站昵称 + uid"></div>
+                <div class="cf-dev-foot">
+                    <button type="button" class="cf-btn cf-btn-b" data-act="cancel">取消</button>
+                    <button type="button" class="cf-btn cf-btn-p" data-act="export">📤 导出 JSON</button>
+                </div>
+            </div>`;
+        mask.querySelector('#cf-exp-name').value = preset.name || '';
+        mask.querySelector('#cf-exp-desc').value = preset.desc || '';
+        mask.querySelector('#cf-exp-author').value = preset.author || getAcfunAuthor();
+        document.body.appendChild(mask);
+        const close = () => mask.remove();
+        mask.querySelector('[data-act=cancel]').addEventListener('click', close);
+        mask.addEventListener('click', (e) => { if (e.target === mask) close(); });
+        mask.querySelector('[data-act=export]').addEventListener('click', () => {
+            const name = mask.querySelector('#cf-exp-name').value.trim();
+            const desc = mask.querySelector('#cf-exp-desc').value.trim();
+            const author = mask.querySelector('#cf-exp-author').value.trim();
+            if (!name) { status('请填写预设名称', 'err'); return; }
+            // 元信息写回预设本体：列表里的预设同步更名/更新描述，下次导出不再重填；
+            // author 可为空串，presetsToExport 对空值不写 JSON
+            preset.name = name;
+            preset.desc = desc;
+            preset.author = author;
+            downloadJson('预设-' + name.replace(/[\\/:*?"<>|]/g, '_') + '.json', presetsToExport([preset])[0]);
+            refreshPresetSelect();
+            status(`📤 已导出「${name}」${author ? ' · 作者 ' + author : ''}`, 'ok');
+            close();
+        });
+        const nameInput = mask.querySelector('#cf-exp-name');
+        if (nameInput) { nameInput.focus(); nameInput.select(); }
+    }
+
+    // 导出单个预设（当前选中的，含内置与自定义）：先补全命名/描述/作者再导出
     function exportCurrentPreset() {
-        const p = getActivePreset();
-        if (!p) { status('没有可导出的预设', 'err'); return; }
-        downloadJson('预设-' + p.id + '.json', presetsToExport([p])[0]);
-        status(`📤 已导出「${p.name}」`, 'ok');
+        openExportDialog(getActivePreset());
     }
 
     // 导出全部自定义预设（备份）
@@ -2523,6 +2859,53 @@
         status(`🗑 已删除「${p.name}」`, 'ok');
     }
 
+    // 校验 composition（效果开发面板创作的引擎组合）：每个阶段的引擎名必须在 ENGINES 里存在
+    function validateComposition(comp) {
+        if (!comp || typeof comp !== 'object') return false;
+        return STAGES.every((s) => {
+            const name = comp[s.key];
+            return name != null && ENGINES[s.key] && ENGINES[s.key][name];
+        });
+    }
+
+    // 预设的激活引擎组合：composition 优先，旧 transform 字段折算成 composition（none 则无）
+    function activeCompositionOf(p) {
+        if (p.composition) return p.composition;
+        if (p.transform && COMPOSITIONS[p.transform]) return COMPOSITIONS[p.transform];
+        return null;
+    }
+
+    // 导入时的参数校验：剔除无 key / 重复 key 的项，提醒 type 拼错、
+    // 以及「引擎组合没声明、调了不生效」的参数（多为手写 JSON 笔误）。
+    // 只提醒不阻断——声明少于引擎参数是合法用法（预设可只暴露部分参数）。
+    function sanitizePresetParams(p) {
+        const warnings = [];
+        const out = [];
+        const seen = {};
+        const TYPES = ['number', 'select', 'color', 'checkbox', 'text'];
+        const comp = activeCompositionOf(p);
+        const declared = comp ? activeEngineParamKeys(comp) : null;
+        // 声明 key 是 'step.x' 时，父路径 'step' 也算命中（嵌套对象参数）
+        const isDeclared = (k) => declared && declared.some((d) => d === k || d.indexOf(k + '.') === 0);
+        (p.params || []).forEach((param) => {
+            if (!param || typeof param !== 'object' || !param.key) {
+                warnings.push('有一个参数缺少 key，已忽略');
+                return;
+            }
+            const key = String(param.key);
+            if (seen[key]) { warnings.push(`参数「${key}」重复，已忽略后者`); return; }
+            seen[key] = true;
+            if (param.type && TYPES.indexOf(param.type) < 0) {
+                warnings.push(`参数「${key}」的 type "${param.type}" 无法识别，将按数字处理`);
+            }
+            if (declared && key.indexOf('effects.') !== 0 && !isDeclared(key)) {
+                warnings.push(`参数「${key}」未被当前引擎组合声明，调整它不会生效`);
+            }
+            out.push(param);
+        });
+        return { params: out, warnings };
+    }
+
     function loadPresetFile(file) {
         const r = new FileReader();
         r.onload = () => {
@@ -2530,21 +2913,32 @@
                 const data = JSON.parse(r.result);
                 const arr = Array.isArray(data) ? data : [data];
                 let n = 0;
+                const warns = [];
                 for (const p of arr) {
                     if (!p || !p.id || !p.name) continue;
                     // 校验 transform 合法性
-                    if (p.transform && p.transform !== 'none' && !TRANSFORMS[p.transform]) {
+                    if (p.transform && p.transform !== 'none' && !COMPOSITIONS[p.transform]) {
                         status(`⚠️ 预设「${p.name}」的 transform 类型无效，已跳过`, 'err');
+                        continue;
+                    }
+                    // 校验 composition 合法性（开发面板创作的预设走 composition）
+                    if (p.composition && !validateComposition(p.composition)) {
+                        status(`⚠️ 预设「${p.name}」的 composition 无效，已跳过`, 'err');
                         continue;
                     }
                     if (!p.options || typeof p.options !== 'object') p.options = {};
                     if (!Array.isArray(p.params)) p.params = [];
+                    // 参数校验：剔除无效项并收集提醒（type 拼错、引擎未声明等）
+                    const sp = sanitizePresetParams(p);
+                    p.params = sp.params;
+                    sp.warnings.forEach((w) => warns.push(`「${p.name}」${w}`));
                     p._origOptions = Object.assign({}, p.options);   // 记下 JSON 原值，供恢复默认
                     p._origEffects = p.effects ? JSON.parse(JSON.stringify(p.effects)) : null;
                     const dup = customPresets.findIndex((x) => x.id === p.id);
                     if (dup >= 0) customPresets[dup] = p; else customPresets.push(p);
                     n++;
                 }
+                if (warns.length) status('⚠️ 导入提醒：' + warns.join('；'), 'err');
                 refreshPresetSelect();
                 // 导入后若当前激活预设带 effects，同步 activePresetEffects
                 syncActiveEffects();
@@ -2560,6 +2954,265 @@
     function syncActiveEffects() {
         const preset = getActivePreset();
         activePresetEffects = (preset && preset.effects) ? preset.effects : null;
+    }
+
+    // ============================================================
+    //  效果开发面板：自由组合 5 阶段引擎，创作新预设
+    //  草稿 devDraft = { split, layout, color, timing, motion, options }
+    //    composition（引擎名映射）+ options（各引擎参数，扁平、支持点路径）
+    // ============================================================
+    let devDraft = null;
+    let devRestoreBtn = null;   // 预览最小化后的「恢复面板」按钮（挂在 body 上，确保可见可点）
+
+    // —— 草稿持久化：关面板 / 刷新页面后重新打开，还原上次的引擎组合、参数与预览文本 ——
+    function defaultDevDraft() {
+        return { split: 'none', layout: 'none', color: 'single', timing: 'uniform', motion: 'none', options: {}, previewText: '' };
+    }
+    function persistDevDraft() {
+        try { storeSet('devDraft', JSON.stringify(devDraft)); } catch (e) {}
+    }
+    // 还原已保存的草稿：引擎名按当前 ENGINES 校验（版本更迭后旧草稿可能引用已删引擎），
+    // options 只保留激活引擎声明过的 key，防止旧草稿残留值污染新组合
+    function loadSavedDevDraft() {
+        let raw;
+        try { raw = JSON.parse(storeGet('devDraft', 'null')); } catch (e) { return null; }
+        if (!raw || typeof raw !== 'object') return null;
+        const d = defaultDevDraft();
+        let touched = false;
+        STAGES.forEach((s) => {
+            const v = raw[s.key];
+            if (typeof v === 'string' && ENGINES[s.key] && ENGINES[s.key][v]) { d[s.key] = v; touched = true; }
+        });
+        if (!touched) return null;
+        if (raw.options && typeof raw.options === 'object') d.options = raw.options;
+        if (typeof raw.previewText === 'string') d.previewText = raw.previewText;
+        d.options = filterOptionsByKeys(d.options, activeEngineParamKeys(d));
+        return d;
+    }
+
+    function closeDevPanel(mask) {
+        if (devRestoreBtn) { devRestoreBtn.remove(); devRestoreBtn = null; }
+        if (mask) mask.remove();
+    }
+
+    function openDevPanel() {
+        const old = $('#cf-dev-panel');
+        if (old) closeDevPanel(old);
+        devDraft = loadSavedDevDraft() || defaultDevDraft();
+        const mask = document.createElement('div');
+        mask.id = 'cf-dev-panel';
+        mask.className = 'cf-dev-panel-mask';
+        mask.innerHTML = `
+            <div class="cf-dev-dlg">
+                <p class="cf-dev-title">🎨 效果开发面板</p>
+                <p class="cf-dev-sub">自由组合 5 个阶段的效果引擎，创作预设里没有的新效果</p>
+                <div class="cf-dev-preview-text">
+                    <label>预览文本</label>
+                    <textarea class="cf-dev-text-input" id="cf-dev-preview-text" rows="3" placeholder="每行一句，多句预览跨句效果；留空则预览全部选中字幕"></textarea>
+                </div>
+                <div class="cf-dev-body" id="cf-dev-body"></div>
+                <div class="cf-dev-foot">
+                    <button type="button" class="cf-btn cf-btn-b" data-act="cancel">取消</button>
+                    <button type="button" class="cf-btn cf-btn-b" data-act="reset">↺ 重置</button>
+                    <button type="button" class="cf-btn cf-btn-b" data-act="preview">👁 预览</button>
+                    <button type="button" class="cf-btn cf-btn-p" data-act="save">💾 保存为预设</button>
+                </div>
+            </div>`;
+        document.body.appendChild(mask);
+        renderDevStages(mask);
+        // 还原上次输入的预览文本，并随输入持久化
+        const textInput = mask.querySelector('#cf-dev-preview-text');
+        if (textInput) {
+            textInput.value = devDraft.previewText || '';
+            textInput.addEventListener('input', () => { devDraft.previewText = textInput.value; persistDevDraft(); });
+        }
+        mask.querySelector('[data-act=cancel]').addEventListener('click', () => closeDevPanel(mask));
+        mask.querySelector('[data-act=reset]').addEventListener('click', () => resetDevPanel(mask));
+        mask.querySelector('[data-act=preview]').addEventListener('click', previewDev);
+        mask.querySelector('[data-act=save]').addEventListener('click', () => saveDevPreset(mask));
+        mask.addEventListener('click', (e) => { if (e.target === mask) closeDevPanel(mask); });
+    }
+
+    // 重置开发面板：草稿清回初始组合（含预览文本），同步覆盖持久化存档
+    function resetDevPanel(mask) {
+        if (!confirm('重置开发面板？当前引擎组合、参数与预览文本将被清空')) return;
+        devDraft = defaultDevDraft();
+        persistDevDraft();
+        renderDevStages(mask);
+        const textInput = mask.querySelector('#cf-dev-preview-text');
+        if (textInput) textInput.value = '';
+        status('↺ 开发面板已重置为初始状态', 'ok');
+    }
+
+    function renderDevStages(mask) {
+        const body = mask.querySelector('#cf-dev-body');
+        body.innerHTML = '';
+        STAGES.forEach((stage) => {
+            const engines = ENGINES[stage.key];
+            const cur = devDraft[stage.key];
+            const wrap = document.createElement('div');
+            wrap.className = 'cf-dev-stage';
+            wrap.innerHTML = `
+                <div class="cf-dev-stage-head">
+                    <label>${stage.label}</label>
+                    <select class="cf-dev-engine" data-stage="${stage.key}">
+                        ${Object.keys(engines).filter((name) => !engines[name].hidden).map((name) => `<option value="${name}"${name === cur ? ' selected' : ''}>${engines[name].label}</option>`).join('')}
+                    </select>
+                    <span class="cf-dev-desc"></span>
+                </div>
+                <div class="cf-dev-params" data-stage-params="${stage.key}"></div>`;
+            body.appendChild(wrap);
+            const sel = wrap.querySelector('.cf-dev-engine');
+            sel.addEventListener('change', () => {
+                devDraft[stage.key] = sel.value;
+                renderDevParams(wrap, stage.key);
+                persistDevDraft();
+            });
+            renderDevParams(wrap, stage.key);
+        });
+    }
+
+    function renderDevParams(wrap, stageKey) {
+        const engine = ENGINES[stageKey][devDraft[stageKey]];
+        const box = wrap.querySelector('.cf-dev-params');
+        const descEl = wrap.querySelector('.cf-dev-desc');
+        if (descEl) descEl.textContent = engine.desc || '';
+        box.innerHTML = '';
+        if (!engine.params.length) { box.style.display = 'none'; return; }
+        box.style.display = '';
+        engine.params.forEach((param) => {
+            const row = buildParamControl(param,
+                () => getByPath(devDraft.options, param.key),
+                (v) => { setByPath(devDraft.options, param.key, v); persistDevDraft(); });
+            row.classList.add('cf-dev-param-row');
+            box.appendChild(row);
+        });
+    }
+
+    // 激活引擎组合声明过的参数 key 列表（含 dot 路径），供残留值过滤与导入校验共用
+    function activeEngineParamKeys(comp) {
+        const keys = [];
+        STAGES.forEach((s) => {
+            const eng = ENGINES[s.key] && ENGINES[s.key][comp[s.key]];
+            if (eng && eng.params) eng.params.forEach((p) => { if (p && p.key) keys.push(p.key); });
+        });
+        return keys;
+    }
+
+    // 只保留 keys 声明过的参数（含父路径，如 'step' 保留给 'step.x'），
+    // 避免切换引擎时残留的旧值被带进导出 JSON / 草稿还原
+    function filterOptionsByKeys(options, keys) {
+        const out = {};
+        Object.keys(options || {}).forEach((k) => {
+            if (keys.some((ak) => ak === k || ak.indexOf(k + '.') === 0)) out[k] = options[k];
+        });
+        return out;
+    }
+
+    function collectDevDraft() {
+        const composition = {};
+        const params = [];
+        STAGES.forEach((s) => {
+            composition[s.key] = devDraft[s.key];
+            const eng = ENGINES[s.key] && ENGINES[s.key][devDraft[s.key]];
+            if (!eng || !eng.params) return;
+            // 把激活引擎声明的参数一并带进保存的预设：保存后预设面板可直接微调
+            //（分组标题缺省用阶段名，让不同阶段的参数在面板里自然分开）
+            eng.params.forEach((p) => {
+                if (!p || !p.key) return;
+                const copy = Object.assign({}, p);
+                if (copy.group === undefined) copy.group = s.label;
+                params.push(copy);
+            });
+        });
+        return {
+            composition,
+            options: filterOptionsByKeys(devDraft.options, activeEngineParamKeys(composition)),
+            params,
+        };
+    }
+
+    function minimizeDevPanel(mask) {
+        if (!mask) return;
+        const dlg = mask.querySelector('.cf-dev-dlg');
+        if (dlg) dlg.style.display = 'none';
+        mask.classList.add('cf-dev-min');
+        if (!devRestoreBtn) {
+            devRestoreBtn = document.createElement('button');
+            devRestoreBtn.type = 'button';
+            devRestoreBtn.className = 'cf-dev-restore';
+            devRestoreBtn.textContent = '🎨 预览中 · 点击恢复开发面板';
+            document.body.appendChild(devRestoreBtn);
+            devRestoreBtn.addEventListener('click', () => restoreDevPanel(mask));
+        }
+        devRestoreBtn.style.display = '';
+    }
+
+    function restoreDevPanel(mask) {
+        if (mask) {
+            const dlg = mask.querySelector('.cf-dev-dlg');
+            if (dlg) dlg.style.display = '';
+            mask.classList.remove('cf-dev-min');
+        }
+        if (devRestoreBtn) devRestoreBtn.style.display = 'none';
+    }
+
+    function previewDev() {
+        const mask = $('#cf-dev-panel');
+        minimizeDevPanel(mask);
+        const draft = collectDevDraft();
+        const p = getPlayer();
+        const curMs = (p && typeof p.currentTime === 'number') ? Math.round(p.currentTime * 1000) : 0;
+        const textInput = $('#cf-dev-preview-text');
+        const customText = textInput ? textInput.value.trim() : '';
+        const GAP = 2000;   // 多句预览时，每句间隔 2 秒
+        let subList;
+        if (customText) {
+            // 多行拆成多句，每句独立、按顺序衔接（供 KTV 双排 / 竖排 KTV 等跨句效果）
+            const lines = customText.split(/\n/).map((s) => s.trim()).filter(Boolean);
+            subList = lines.map((text, i) => ({ time: curMs + i * GAP, text, duration: GAP }));
+        } else {
+            // 导入字幕：用全部选中字幕，按真实时间轴预览全部
+            const selected = subs.filter((s) => s.selected);
+            if (selected.length) {
+                subList = selected.map((s) => ({ time: s.time, text: s.text, duration: calcDurationMs(subs.indexOf(s)) }));
+            } else {
+                subList = ['AC在，爱一直在', '天下漫友是一家'].map((text, i) => ({ time: curMs + i * GAP, text, duration: GAP }));
+            }
+        }
+        const tempId = '__dev_preview__';
+        customPresets.push({ id: tempId, name: '预览', desc: '', transform: 'none', composition: draft.composition, options: draft.options, params: [] });
+        const oldId = activePresetId;
+        activePresetId = tempId;
+        syncActiveEffects();
+        syncEditorOwnedUI();
+        previewMulti(subList, GAP).then(() => {
+            activePresetId = oldId;
+            const i = customPresets.findIndex((p) => p.id === tempId);
+            if (i >= 0) customPresets.splice(i, 1);
+            syncActiveEffects();
+            syncEditorOwnedUI();
+        });
+    }
+
+    function saveDevPreset(mask) {
+        const draft = collectDevDraft();
+        const preset = {
+            id: 'dev-' + genId().slice(0, 8),
+            name: '开发预设-' + new Date().toISOString().slice(11, 19).replace(/:/g, ''),
+            desc: '由效果开发面板创作',
+            transform: 'none',
+            composition: draft.composition,
+            options: draft.options,
+            params: draft.params,   // 带上引擎声明的参数，保存后预设面板可直接微调
+            author: getAcfunAuthor(),   // 自动署名（A 站昵称 + uid），导出弹窗可直接改
+        };
+        customPresets.push(preset);
+        activePresetId = preset.id;
+        syncActiveEffects();
+        refreshPresetSelect();
+        status(`💾 已保存新预设「${preset.name}」，可像普通预设一样使用`, 'ok');
+        closeDevPanel(mask);
     }
 
     function loadSub2File(file) {
@@ -2641,6 +3294,7 @@
         $('#cf-preset').addEventListener('change', onPresetChange);
         $('#cf-fold-preset').addEventListener('click', togglePresetFold);
         $('#cf-fold-style').addEventListener('click', toggleStyleFold);
+        $('#cf-open-dev-panel').addEventListener('click', openDevPanel);
         $('#cf-import-preset').addEventListener('click', importPreset);
         $('#cf-export-current').addEventListener('click', exportCurrentPreset);
         $('#cf-export-all').addEventListener('click', exportAllPresets);
@@ -2911,6 +3565,33 @@
         .cf-adjust-item{display:flex;align-items:center;gap:6px;font-size:12px;color:#666;cursor:pointer;padding:2px 0}
         .cf-adjust-item input{accent-color:#fd4c5d;cursor:pointer}
         .cf-adjust-foot{display:flex;justify-content:flex-end;gap:6px;padding:10px 14px;border-top:1px solid #f0f0f0;background:#fafafa}
+        /* 效果开发面板弹窗 */
+        .cf-dev-panel-mask{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:2147483000;display:flex;align-items:center;justify-content:center}
+        .cf-dev-panel-mask.cf-dev-min{background:transparent;pointer-events:none}
+        .cf-dev-restore{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483001;pointer-events:auto;background:#fd4c5d;color:#fff;border:none;border-radius:20px;font-size:14px;padding:10px 26px;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+        .cf-dev-dlg{width:420px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;background:#fff;border-radius:6px;box-shadow:0 6px 24px rgba(0,0,0,.25);overflow:hidden}
+        .cf-dev-title{font-size:14px;font-weight:600;color:#333;padding:12px 14px 4px}
+        .cf-dev-sub{font-size:11px;color:#999;padding:0 14px 8px;line-height:1.5}
+        .cf-dev-preview-text{display:flex;align-items:flex-start;gap:8px;padding:0 14px 8px}
+        .cf-dev-preview-text label{font-size:12px;color:#333;white-space:nowrap;line-height:24px}
+        .cf-dev-text-input{flex:1;min-height:42px;border:1px solid #e5e5e5;border-radius:3px;font-size:13px;color:rgba(0,0,0,.65);background:#fff;padding:4px 8px;outline:none;resize:vertical;font-family:inherit;line-height:1.5}
+        .cf-dev-text-input:focus{border-color:#fd4c5d}
+        .cf-dev-body{flex:1;overflow-y:auto;padding:0 14px 10px;display:flex;flex-direction:column;gap:8px}
+        .cf-dev-stage{border:1px solid #e5e5e5;border-radius:4px;padding:8px;background:#fafafa}
+        .cf-dev-stage-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+        .cf-dev-stage-head label{font-size:12px;font-weight:600;color:#333;min-width:32px}
+        .cf-dev-stage-head select{flex:1;height:22px;border:1px solid #e5e5e5;border-radius:3px;font-size:12px;color:rgba(0,0,0,.65);background:#fff;padding:0 6px;outline:none}
+        .cf-dev-desc{font-size:11px;color:#bbb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px}
+        .cf-dev-params{display:flex;flex-direction:column;gap:4px}
+        .cf-dev-param-row{margin-bottom:0}
+        .cf-dev-param-row label{min-width:80px}
+        .cf-dev-foot{display:flex;justify-content:flex-end;gap:6px;padding:10px 14px;border-top:1px solid #f0f0f0;background:#fafafa}
+        /* 导出预设弹窗的表单行（挂在 body 上，复用 cf-dev-dlg 外壳） */
+        #cf-export-panel .cf-exp-row{display:flex;align-items:flex-start;gap:8px;padding:0 14px 10px}
+        #cf-export-panel .cf-exp-row label{font-size:12px;color:#333;white-space:nowrap;min-width:34px;line-height:24px}
+        #cf-export-panel .cf-exp-row input,#cf-export-panel .cf-exp-row textarea{flex:1;background:#fff;border:1px solid #e5e5e5;border-radius:3px;color:rgba(0,0,0,.65);padding:4px 8px;font-size:12px;outline:none;font-family:inherit;line-height:1.5}
+        #cf-export-panel .cf-exp-row textarea{resize:vertical;min-height:36px}
+        #cf-export-panel .cf-exp-row input:focus,#cf-export-panel .cf-exp-row textarea:focus{border-color:#fd4c5d}
         /* 原生面板标题栏“高级弹幕”旁的切换入口（标题栏改为 flex，按钮靠右） */
         .danmaku-g-launcher-panel .panel-title{display:flex;align-items:center;justify-content:space-between}
         #cf-entry-group{margin-left:auto;display:inline-flex;align-items:center;gap:8px}
@@ -2926,8 +3607,12 @@
     //  初始化
     // ============================================================
 
+    // 版本号单一来源：运行时读 Tampermonkey 注入的 GM_info（即头部 @version），
+    // 非油猴环境（node 冒烟测试等）显示 dev，避免手写数字与 @version 漂移
+    const SCRIPT_VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || 'dev';
+
     function init() {
-        log('🚀 弹幕字幕发送器 v6.1.0 开始初始化');
+        log('🚀 弹幕字幕发送器 v' + SCRIPT_VERSION + ' 开始初始化');
 
         const steps = [
             ['恢复预设', initPresets],

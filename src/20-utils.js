@@ -51,6 +51,16 @@
     }
     function rgbToHex(n) { return '#' + (n >>> 0).toString(16).padStart(6, '0'); }
 
+    // HTML 转义：把用户可控文本安全插入 innerHTML / 属性（防 <img onerror=...> 注入）
+    function escapeHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     function t2ms(s) {
         s = (s || '').replace(',', '.');
         const m = s.match(/(\d+):(\d+):(\d+)(?:\.(\d+))?/);

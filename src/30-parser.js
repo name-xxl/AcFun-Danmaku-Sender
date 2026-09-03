@@ -58,10 +58,12 @@
                 styleName = parts[1] ? parts[1].trim() : 'Default';
             }
             body = body.replace(/\{[^}]*\}/g, '').replace(/\\N/g, '\n').replace(/\\n/g, '\n').trim();
-            const first = body.split('\n')[0].trim();
             const ms = ass2ms(st);
-            if (ms !== null && first) {
-                out.push({ time: ms, text: first, style: parseASSStyle(styles[styleName] || {}, first) });
+            // 保留全部行：{\N} 硬换行的多行对白不再只取首行。
+            // 文本里的 \n 与 SRT 多行一致，后续由拆分引擎的「按行拆」处理；
+            // 不拆时整段作为一条弹幕原样发送。
+            if (ms !== null && body) {
+                out.push({ time: ms, text: body, style: parseASSStyle(styles[styleName] || {}) });
             }
         }
         return out.sort((a, b) => a.time - b.time);

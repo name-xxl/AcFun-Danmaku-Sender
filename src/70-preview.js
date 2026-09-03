@@ -58,7 +58,7 @@
         // 时长每次略不同，绕过渲染器“按内容去重”导致同条字幕连续预览无反应的问题
         const dur = Math.max(500, baseDur - (previewSeq % 3));
         // 按激活预设展开成多个 model（seq 从 1 起，保证与预览全部/发送的奇偶一致）
-        const models = expandSub(sub, cfg, dur, idx + 1);
+        const models = expandSub(sub, cfg, dur, 1);
         log('👁 展开出 ' + models.length + ' 个 model，首条 startTime=' + (models[0] && models[0].startTime));
         models.forEach((m) => {
             m.id = 'cf-prev-' + (++previewSeq);
@@ -141,5 +141,54 @@
                 status('⚠️ 预览失败，请确认已展开高级弹幕编辑器', 'err');
             }
         }, 600);
+    }
+
+    // 多句预览：把一组字幕（每句独立）按顺序衔接、一次注入视频。
+    // 供开发面板预览「两句同时出现」的跨句效果（如 KTV 双排、竖排 KTV）使用。
+    // subList: [{ time, text, duration? }]，每句用 seq（k+1）与 prevTime（前一句时间）衔接。
+    function previewMulti(subList, durMs) {
+        const p = getPlayer();
+        if (!p || typeof p.loadDanmakuG !== 'function') {
+            status('⚠️ 高级弹幕渲染器未就绪，请先点弹幕输入框内第三个按钮展开一次', 'err');
+            return Promise.resolve();
+        }
+        if (!ensureRenderer(p)) {
+            status('⚠️ 高级弹幕渲染器初始化失败，请展开一次原生高级弹幕编辑器', 'err');
+            return Promise.resolve();
+        }
+        if (!subList || !subList.length) { status('没有可预览的内容', 'err'); return Promise.resolve(); }
+
+        expirePreviews();
+        const models = [];
+        subList.forEach((s, k) => {
+            const cfg = cfgFor(s);
+            const prevTime = k > 0 ? subList[k - 1].time : null;
+            const dur = (s.duration != null) ? s.duration : durMs;
+            const expanded = expandSub(s, cfg, dur, k + 1, prevTime);
+            expanded.forEach((m) => {
+                m.id = 'cf-prevm-' + (++previewSeq) + '-' + k;
+                m.__seq = previewSeq;
+                m.user = String(getUid() || '');
+                previewRefs.push(m);
+                models.push(m);
+            });
+        });
+        if (!models.length) { status('预览展开为空', 'err'); return Promise.resolve(); }
+
+        pauseVideo();
+        seekTo(Math.max(0, subList[0].time + timeOffset - 400));
+        return new Promise((resolve) => {
+            setTimeout(() => {
+                try {
+                    p.loadDanmakuG(models);
+                    status(`▶ 预览：${subList.length} 句 → ${models.length} 条弹幕`, 'busy');
+                } catch (e) {
+                    log('多句预览失败', e);
+                    status('⚠️ 预览失败，请确认已展开高级弹幕编辑器', 'err');
+                }
+                playVideo();
+                resolve();
+            }, 600);
+        });
     }
 

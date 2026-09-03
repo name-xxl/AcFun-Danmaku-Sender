@@ -196,6 +196,33 @@
         .cf-adjust-item{display:flex;align-items:center;gap:6px;font-size:12px;color:#666;cursor:pointer;padding:2px 0}
         .cf-adjust-item input{accent-color:#fd4c5d;cursor:pointer}
         .cf-adjust-foot{display:flex;justify-content:flex-end;gap:6px;padding:10px 14px;border-top:1px solid #f0f0f0;background:#fafafa}
+        /* 效果开发面板弹窗 */
+        .cf-dev-panel-mask{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:2147483000;display:flex;align-items:center;justify-content:center}
+        .cf-dev-panel-mask.cf-dev-min{background:transparent;pointer-events:none}
+        .cf-dev-restore{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:2147483001;pointer-events:auto;background:#fd4c5d;color:#fff;border:none;border-radius:20px;font-size:14px;padding:10px 26px;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+        .cf-dev-dlg{width:420px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;background:#fff;border-radius:6px;box-shadow:0 6px 24px rgba(0,0,0,.25);overflow:hidden}
+        .cf-dev-title{font-size:14px;font-weight:600;color:#333;padding:12px 14px 4px}
+        .cf-dev-sub{font-size:11px;color:#999;padding:0 14px 8px;line-height:1.5}
+        .cf-dev-preview-text{display:flex;align-items:flex-start;gap:8px;padding:0 14px 8px}
+        .cf-dev-preview-text label{font-size:12px;color:#333;white-space:nowrap;line-height:24px}
+        .cf-dev-text-input{flex:1;min-height:42px;border:1px solid #e5e5e5;border-radius:3px;font-size:13px;color:rgba(0,0,0,.65);background:#fff;padding:4px 8px;outline:none;resize:vertical;font-family:inherit;line-height:1.5}
+        .cf-dev-text-input:focus{border-color:#fd4c5d}
+        .cf-dev-body{flex:1;overflow-y:auto;padding:0 14px 10px;display:flex;flex-direction:column;gap:8px}
+        .cf-dev-stage{border:1px solid #e5e5e5;border-radius:4px;padding:8px;background:#fafafa}
+        .cf-dev-stage-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+        .cf-dev-stage-head label{font-size:12px;font-weight:600;color:#333;min-width:32px}
+        .cf-dev-stage-head select{flex:1;height:22px;border:1px solid #e5e5e5;border-radius:3px;font-size:12px;color:rgba(0,0,0,.65);background:#fff;padding:0 6px;outline:none}
+        .cf-dev-desc{font-size:11px;color:#bbb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px}
+        .cf-dev-params{display:flex;flex-direction:column;gap:4px}
+        .cf-dev-param-row{margin-bottom:0}
+        .cf-dev-param-row label{min-width:80px}
+        .cf-dev-foot{display:flex;justify-content:flex-end;gap:6px;padding:10px 14px;border-top:1px solid #f0f0f0;background:#fafafa}
+        /* 导出预设弹窗的表单行（挂在 body 上，复用 cf-dev-dlg 外壳） */
+        #cf-export-panel .cf-exp-row{display:flex;align-items:flex-start;gap:8px;padding:0 14px 10px}
+        #cf-export-panel .cf-exp-row label{font-size:12px;color:#333;white-space:nowrap;min-width:34px;line-height:24px}
+        #cf-export-panel .cf-exp-row input,#cf-export-panel .cf-exp-row textarea{flex:1;background:#fff;border:1px solid #e5e5e5;border-radius:3px;color:rgba(0,0,0,.65);padding:4px 8px;font-size:12px;outline:none;font-family:inherit;line-height:1.5}
+        #cf-export-panel .cf-exp-row textarea{resize:vertical;min-height:36px}
+        #cf-export-panel .cf-exp-row input:focus,#cf-export-panel .cf-exp-row textarea:focus{border-color:#fd4c5d}
         /* 原生面板标题栏“高级弹幕”旁的切换入口（标题栏改为 flex，按钮靠右） */
         .danmaku-g-launcher-panel .panel-title{display:flex;align-items:center;justify-content:space-between}
         #cf-entry-group{margin-left:auto;display:inline-flex;align-items:center;gap:8px}
@@ -211,8 +238,12 @@
     //  初始化
     // ============================================================
 
+    // 版本号单一来源：运行时读 Tampermonkey 注入的 GM_info（即头部 @version），
+    // 非油猴环境（node 冒烟测试等）显示 dev，避免手写数字与 @version 漂移
+    const SCRIPT_VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || 'dev';
+
     function init() {
-        log('🚀 弹幕字幕发送器 v6.1.0 开始初始化');
+        log('🚀 弹幕字幕发送器 v' + SCRIPT_VERSION + ' 开始初始化');
 
         const steps = [
             ['恢复预设', initPresets],

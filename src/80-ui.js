@@ -53,11 +53,11 @@
             </div>
 
             <div class="cf-sec" id="cf-preset-sec">
-                <p class="cf-sec-title">预设<button type="button" class="cf-fold-btn" id="cf-fold-preset">折叠</button><button type="button" class="cf-fold-btn" id="cf-import-preset">📥 导入</button><input type="file" id="cf-preset-file" accept=".json" style="display:none"></p>
+                <p class="cf-sec-title">预设<button type="button" class="cf-fold-btn" id="cf-open-dev-panel">🎨 开发</button><button type="button" class="cf-fold-btn" id="cf-fold-preset">折叠</button><button type="button" class="cf-fold-btn" id="cf-import-preset">📥 导入</button><input type="file" id="cf-preset-file" accept=".json" style="display:none"></p>
                 <div id="cf-preset-body">
                     <div class="cf-row">
                         <label>预设</label>
-                        <select id="cf-preset">${getAllPresets().map((p) => `<option value="${p.id}"${p.id === activePresetId ? ' selected' : ''}>${p.name}</option>`).join('')}</select>
+                        <select id="cf-preset">${getAllPresets().map((p) => `<option value="${escapeHtml(p.id)}"${p.id === activePresetId ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}</select>
                     </div>
                     <div class="cf-preset-desc" id="cf-preset-desc"></div>
                     <div class="cf-preset-params" id="cf-preset-params"></div>
@@ -251,7 +251,7 @@
             return `<div class="cf-item${st ? ' ' + st : ''}" data-i="${i}">
                 <input type="checkbox" class="cf-chk-item"${s.selected ? ' checked' : ''} data-i="${i}">
                 <span class="cf-t">${fmt(s.time)}</span>
-                <span class="cf-c" title="${s.text.replace(/"/g, '&quot;')}">${s.text}</span>
+                <span class="cf-c" title="${escapeHtml(s.text)}">${escapeHtml(s.text)}</span>
                 <span class="cf-s ${stCls[st] || ''}">${stIcon[st] || '○'}</span>
             </div>`;
         }).join('');
