@@ -76,18 +76,44 @@ node build.js
 
 ## 预设开发
 
-> 预设开发文档与示例文件正在整理中，即将补充。
+一个最简示例（逐字竖排 + 弹跳运动，导入后即可在预设面板微调）：
+
+```json
+{
+  "id": "demo-vertical-bounce",
+  "name": "竖排弹跳示例",
+  "desc": "逐字竖排 + 弹跳运动",
+  "composition": {
+    "split": "chars",
+    "layout": "vertical",
+    "color": "single",
+    "timing": "stagger",
+    "motion": "bounce"
+  },
+  "options": {
+    "bounce": { "height": 12, "times": 3 },
+    "gap": 1.8,
+    "charDelay": 60
+  },
+  "params": [
+    { "key": "bounce.height", "label": "弹跳幅度", "type": "number", "min": 1, "max": 50, "step": 1, "group": "运动" },
+    { "key": "gap", "label": "字距", "type": "number", "min": 0.5, "max": 6, "step": 0.1 }
+  ]
+}
+```
 
 要点：
 
-- 预设 JSON 顶层：`id / name / desc / transform / options / params / owns / effects`；
-- `transform` 有 5 种：`none`、`chars-vertical`、`chars-karaoke`、`multi-lang`、`declarative`；
+- 预设 JSON 顶层：`id / name / desc / transform / composition / options / params / owns / effects`；
+- `transform` 是旧的组合别名（`none`、`chars-vertical`、`chars-karaoke`、`multi-lang`、`declarative`），`composition` 是更细的 5 阶段引擎组合（`split / layout / color / timing / motion`），两者同时存在时 `composition` 优先；新预设建议直接用 `composition`；
+- 每个阶段可选引擎：拆分 `split`（none/chars/words/lines/bilingual）、布局 `layout`（none/vertical/horizontal/grid/bilingual）、着色 `color`（single/karaoke/bilingual）、时序 `timing`（uniform/stagger/sweep）、运动 `motion`（none 静止 / advanced 多段运动 / bounce 弹跳 / pop 弹入 / spin 旋转 / slide 滑入）；
+- `motion: 'advanced'` 用于多段运动：在 `options.moves` 里声明运动轨迹数组（每段 `fromX/fromY/toX/toY/fromScaleX/…/toRotateZ/moveTime/timingFunction`），坐标/缩放/旋转/耗时留空表示「跟随样式或时长」；
 - `declarative` 是声明式引擎，自由度最高，用 `split / flow / columns / rows / step / base / highlight` 描述排版；
 - `params` 支持 `number / select / color / checkbox` 四种控件，可用 `group` 分组、`key` 用点路径访问嵌套参数（`effects.` 前缀可直达 effects 字段）；参数 key 建议带引擎/阶段前缀防冲突，只有刻意跨阶段联动的共享参数（如 `step.x`/`step.time`）才用裸名；
 - 预设导入时会校验 `params`：缺 key / 重复 key / type 拼错 / 引擎组合未声明的参数会提醒（只提醒不阻断，预设声明少于引擎参数是合法用法）；
 - 效果开发面板保存的预设自带各激活引擎的参数声明，保存后可在预设面板直接微调；开发面板的草稿（引擎组合/参数/预览文本）自动持久化，关面板或刷新后重新打开即还原；
 - `owns` 声明接管哪些编辑器字段（位置/颜色等），接管后编辑器自动禁用；
-- `effects` 叠加高级样式：旋转/缩放/模糊/投影/外发光/多段运动（含每段拉伸旋转与缓动）；
+- `effects` 叠加高级静态样式：旋转/缩放/模糊/投影/外发光（运动轨迹已独立到 `options.moves`，不属于 effects）；
 - 预设 JSON 可带 `author` 字段署名；「导出当前」「导出为预设」会先弹窗补全命名/描述/作者（作者默认自动填当前登录的 A 站昵称 + uid），确认后导出为 JSON 文件，接收方通过「导入预设」使用。
 
 ## 已知环境事实（重要）

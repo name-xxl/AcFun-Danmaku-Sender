@@ -208,11 +208,12 @@
         .cf-dev-text-input{flex:1;min-height:42px;border:1px solid #e5e5e5;border-radius:3px;font-size:13px;color:rgba(0,0,0,.65);background:#fff;padding:4px 8px;outline:none;resize:vertical;font-family:inherit;line-height:1.5}
         .cf-dev-text-input:focus{border-color:#fd4c5d}
         .cf-dev-body{flex:1;overflow-y:auto;padding:0 14px 10px;display:flex;flex-direction:column;gap:8px}
+        .cf-dev-split-tip{font-size:11px;color:#fa8c16;background:#fff7e6;border:1px solid #ffd591;border-radius:3px;padding:5px 8px;line-height:1.5}
         .cf-dev-stage{border:1px solid #e5e5e5;border-radius:4px;padding:8px;background:#fafafa}
         .cf-dev-stage-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
         .cf-dev-stage-head label{font-size:12px;font-weight:600;color:#333;min-width:32px}
         .cf-dev-stage-head select{flex:1;height:22px;border:1px solid #e5e5e5;border-radius:3px;font-size:12px;color:rgba(0,0,0,.65);background:#fff;padding:0 6px;outline:none}
-        .cf-dev-desc{font-size:11px;color:#bbb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px}
+        .cf-dev-desc{font-size:12px;color:#999;cursor:help;flex:none;line-height:22px;user-select:none}
         .cf-dev-params{display:flex;flex-direction:column;gap:4px}
         .cf-dev-param-row{margin-bottom:0}
         .cf-dev-param-row label{min-width:80px}

@@ -454,11 +454,12 @@
                 id,
                 name,
                 desc: `由编辑器导出的全字段预设（含样式与运动，可调字段 ${params.length} 个）`,
-                transform: 'none',
-                options: {},
+                // 运动走 motion 引擎（多段运动），样式与高级字段分别走 options/effects
+                composition: { split: 'none', layout: 'none', color: 'single', timing: 'uniform', motion: 'advanced' },
+                options: { moves: advancedConfig.moves.map((m) => Object.assign({}, m)) },
                 params,
                 owns: hasFixedCoords ? ['posX', 'posY'] : [],
-                // 高级字段统一放 effects：导入后批量发送会应用这些字段
+                // 高级字段（静态）放 effects：导入后批量发送会应用这些字段
                 effects: {
                     zIndex: advancedConfig.zIndex,
                     rotate: Object.assign({}, advancedConfig.rotate),
@@ -466,7 +467,6 @@
                     blur: advancedConfig.blur,
                     shine: advancedConfig.shine ? Object.assign({}, advancedConfig.shine) : null,
                     shadow: advancedConfig.shadow ? Object.assign({}, advancedConfig.shadow) : null,
-                    moves: advancedConfig.moves.map((m) => Object.assign({}, m)),
                 },
             };
             // 弹窗补全命名/描述/作者后再导出 JSON（作者默认填当前 A 站昵称 + uid）

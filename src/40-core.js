@@ -174,7 +174,8 @@
         { key: 'effects.shine.color', label: '发光色', group: '外发光', type: 'color', default: DEFAULT_SHINE_PLACEHOLDER.color },
     ];
 
-    // 规范化 effects：补齐缺失字段，保证 buildModel 访问安全
+    // 规范化 effects：补齐缺失字段，保证 buildModel 访问安全。
+    // （moves 已收编进 motion 阶段引擎，不再作为 effects 字段）
     function normalizeEffects(ef) {
         const src = ef || {};
         return {
@@ -184,7 +185,6 @@
             blur: num(src.blur, 0),
             shine: src.shine || null,
             shadow: src.shadow || null,
-            moves: (src.moves && src.moves.length) ? src.moves : advancedConfig.moves,
         };
     }
 
@@ -192,7 +192,32 @@
     //  模型构造（与 A 站原生 getData 完全一致）
     // ============================================================
 
-    function buildModel(sub, cfg, durationMs, effects) {
+    // 把 moves（多段运动轨迹）转成 animationFrames（A 站动画帧）。纯函数。
+    // 坐标 null → 回落 cfg.posX/posY（跟随样式区/预设定位）；
+    // 帧级 scale/rotate null → 回落 adv.scale/adv.rotate（顶层拉伸旋转）；
+    // moveTime 空 → 回落 durationMs。
+    function buildAnimationFrames(moves, cfg, adv, durationMs) {
+        const baseMoveTime = Math.max(100, Math.round(durationMs || cfg.moveTime || DEFAULT_MOVE_TIME));
+        const list = (moves && moves.length) ? moves : [{ fromX: null, fromY: null, toX: null, toY: null, moveTime: null, timingFunction: 'linear' }];
+        return list.map((mv) => {
+            const frame = (sx, sy, rx, ry, rz, px, py) => ({
+                pos: { x: px, y: py, z: 1 },
+                scale: { x: num(sx, adv.scale.x), y: num(sy, adv.scale.y), z: 1 },
+                rotate: { x: num(rx, adv.rotate.x), y: num(ry, adv.rotate.y), z: num(rz, adv.rotate.z) },
+            });
+            return {
+                from: frame(mv.fromScaleX, mv.fromScaleY, mv.fromRotateX, mv.fromRotateY, mv.fromRotateZ,
+                    num(mv.fromX, num(cfg.posX, DEFAULT_POS_X)), num(mv.fromY, num(cfg.posY, DEFAULT_POS_Y))),
+                to: frame(mv.toScaleX, mv.toScaleY, mv.toRotateX, mv.toRotateY, mv.toRotateZ,
+                    num(mv.toX, num(cfg.posX, DEFAULT_POS_X)), num(mv.toY, num(cfg.posY, DEFAULT_POS_Y))),
+                timingFunction: mv.timingFunction || 'linear',
+                staticTime: 0,
+                moveTime: Math.max(100, Math.round(num(mv.moveTime, baseMoveTime))),
+            };
+        });
+    }
+
+    function buildModel(sub, cfg, durationMs, effects, moves) {
         const text = Array.from((sub.text || '').trim()).slice(0, 255).join('');
         // 起始时间 = 字幕时间 + 全局时间偏移（ms，可为负，用于微调同步）
         const startTime = Math.max(0, Math.round(sub.time + timeOffset));
@@ -226,26 +251,10 @@
         // 多段运动：坐标 null 时回落到 cfg.posX/posY（跟随样式区/预设定位），
         // 显式数字才用固定坐标。这样竖排/KTV/声明式等 transform 通过 cfg 传递的
         // 位置才能真正生效，而不是被默认 50,85 固定运动钉死在同一点。
-        const moves = (adv.moves && adv.moves.length) ? adv.moves : [{ fromX: null, fromY: null, toX: null, toY: null, moveTime: null, timingFunction: 'linear' }];
-        const animationFrames = moves.map((mv) => {
-            // 动画帧级 scale/rotate：空(null/undefined/'') → 回落顶层 adv.scale/adv.rotate，
-            // 显式数字才用该段自己的拉伸/旋转（与 A 站渲染器 drawDanmakuFrame 语义一致）
-            const frame = (sx, sy, rx, ry, rz, px, py) => ({
-                pos: { x: px, y: py, z: 1 },
-                scale: { x: num(sx, adv.scale.x), y: num(sy, adv.scale.y), z: 1 },
-                rotate: { x: num(rx, adv.rotate.x), y: num(ry, adv.rotate.y), z: num(rz, adv.rotate.z) },
-            });
-            return {
-                from: frame(mv.fromScaleX, mv.fromScaleY, mv.fromRotateX, mv.fromRotateY, mv.fromRotateZ,
-                    num(mv.fromX, num(cfg.posX, DEFAULT_POS_X)), num(mv.fromY, num(cfg.posY, DEFAULT_POS_Y))),
-                to: frame(mv.toScaleX, mv.toScaleY, mv.toRotateX, mv.toRotateY, mv.toRotateZ,
-                    num(mv.toX, num(cfg.posX, DEFAULT_POS_X)), num(mv.toY, num(cfg.posY, DEFAULT_POS_Y))),
-                timingFunction: mv.timingFunction || 'linear',
-                staticTime: 0,
-                // moveTime 空(null/undefined/''）→ 跟随 durationMs；显式数字才固定耗时
-                moveTime: Math.max(100, Math.round(num(mv.moveTime, moveTime))),
-            };
-        });
+        // moves 来源：motion 引擎写入的 l.moves（null=静止）；仅当「未传 moves」（无预设直发路径）
+        // 才回落弹幕模式手动运动 advancedConfig.moves，避免字幕模式预设与弹幕模式共享运动状态。
+        const ms = (moves === undefined) ? advancedConfig.moves : moves;
+        const animationFrames = buildAnimationFrames(ms, cfg, adv, durationMs);
         // 总时长 = 所有段 moveTime 之和
         const totalDur = animationFrames.reduce((a, f) => a + f.moveTime, 0);
 

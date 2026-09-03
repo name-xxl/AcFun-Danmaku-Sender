@@ -13,7 +13,14 @@
     function updatePresetUI() {
         const preset = getActivePreset();
         const desc = $('#cf-preset-desc');
-        if (desc) desc.textContent = preset ? (preset.desc || '') : '';
+        if (desc) {
+            let d = preset ? (preset.desc || '') : '';
+            // 拆字 + 逐字延迟/扫光预设会拆发大量弹幕，提示注意 A 站弹幕规范
+            if (preset && isCharSplitComposition(activeCompositionOf(preset))) {
+                d += (d ? '　' : '') + '⚠️ 逐字拆发，弹幕量大，请注意 A 站弹幕规范';
+            }
+            desc.textContent = d;
+        }
         const sub2Row = $('#cf-sub2-row');
         if (sub2Row) sub2Row.style.display = (preset && preset.transform === 'multi-lang') ? '' : 'none';
         // 保存/恢复按钮：有可调参数、或带 effects、或带 options 时显示（带 effects 的预设也能一键还原）
@@ -564,17 +571,41 @@
             sel.addEventListener('change', () => {
                 devDraft[stage.key] = sel.value;
                 renderDevParams(wrap, stage.key);
+                renderDevSplitTip(mask);
                 persistDevDraft();
             });
             renderDevParams(wrap, stage.key);
         });
+        renderDevSplitTip(mask);
+    }
+
+    // 开发面板：逐字拆发提示（拆字 + 逐字延迟/扫光时弹幕量极大）
+    function renderDevSplitTip(mask) {
+        const body = mask.querySelector('#cf-dev-body');
+        if (!body) return;
+        let tip = body.querySelector('.cf-dev-split-tip');
+        if (isCharSplitComposition(devDraft)) {
+            if (!tip) {
+                tip = document.createElement('div');
+                tip.className = 'cf-dev-split-tip';
+                body.insertBefore(tip, body.firstChild);
+            }
+            tip.textContent = '⚠️ 当前组合逐字拆发，每句拆成大量弹幕（约字数×N 倍），请控制发送量、注意 A 站弹幕规范';
+        } else if (tip) {
+            tip.remove();
+        }
     }
 
     function renderDevParams(wrap, stageKey) {
         const engine = ENGINES[stageKey][devDraft[stageKey]];
         const box = wrap.querySelector('.cf-dev-params');
         const descEl = wrap.querySelector('.cf-dev-desc');
-        if (descEl) descEl.textContent = engine.desc || '';
+        if (descEl) {
+            // 说明文字受布局限制会被截断，改成 ⓘ 图标 + title 悬浮提示完整说明
+            const d = engine.desc || '';
+            descEl.textContent = d ? 'ⓘ' : '';
+            descEl.title = d;
+        }
         box.innerHTML = '';
         if (!engine.params.length) { box.style.display = 'none'; return; }
         box.style.display = '';

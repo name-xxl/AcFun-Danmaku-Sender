@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AcFun 弹幕字幕发送器 (H5版高级弹幕)
 // @namespace    https://github.com/acfun-danmaku-sender
-// @version      6.4.0
+// @version      6.5.0
 // @description  上传 SRT/ASS/LRC 字幕文件，按时间轴自动发送高级弹幕。仿原生面板，替换 A 站高级弹幕编辑器并提供视频预览。
 // @author       name_xxl
 // @match        *://www.acfun.cn/v/ac*
@@ -534,7 +534,8 @@
         { key: 'effects.shine.color', label: '发光色', group: '外发光', type: 'color', default: DEFAULT_SHINE_PLACEHOLDER.color },
     ];
 
-    // 规范化 effects：补齐缺失字段，保证 buildModel 访问安全
+    // 规范化 effects：补齐缺失字段，保证 buildModel 访问安全。
+    // （moves 已收编进 motion 阶段引擎，不再作为 effects 字段）
     function normalizeEffects(ef) {
         const src = ef || {};
         return {
@@ -544,7 +545,6 @@
             blur: num(src.blur, 0),
             shine: src.shine || null,
             shadow: src.shadow || null,
-            moves: (src.moves && src.moves.length) ? src.moves : advancedConfig.moves,
         };
     }
 
@@ -552,7 +552,32 @@
     //  模型构造（与 A 站原生 getData 完全一致）
     // ============================================================
 
-    function buildModel(sub, cfg, durationMs, effects) {
+    // 把 moves（多段运动轨迹）转成 animationFrames（A 站动画帧）。纯函数。
+    // 坐标 null → 回落 cfg.posX/posY（跟随样式区/预设定位）；
+    // 帧级 scale/rotate null → 回落 adv.scale/adv.rotate（顶层拉伸旋转）；
+    // moveTime 空 → 回落 durationMs。
+    function buildAnimationFrames(moves, cfg, adv, durationMs) {
+        const baseMoveTime = Math.max(100, Math.round(durationMs || cfg.moveTime || DEFAULT_MOVE_TIME));
+        const list = (moves && moves.length) ? moves : [{ fromX: null, fromY: null, toX: null, toY: null, moveTime: null, timingFunction: 'linear' }];
+        return list.map((mv) => {
+            const frame = (sx, sy, rx, ry, rz, px, py) => ({
+                pos: { x: px, y: py, z: 1 },
+                scale: { x: num(sx, adv.scale.x), y: num(sy, adv.scale.y), z: 1 },
+                rotate: { x: num(rx, adv.rotate.x), y: num(ry, adv.rotate.y), z: num(rz, adv.rotate.z) },
+            });
+            return {
+                from: frame(mv.fromScaleX, mv.fromScaleY, mv.fromRotateX, mv.fromRotateY, mv.fromRotateZ,
+                    num(mv.fromX, num(cfg.posX, DEFAULT_POS_X)), num(mv.fromY, num(cfg.posY, DEFAULT_POS_Y))),
+                to: frame(mv.toScaleX, mv.toScaleY, mv.toRotateX, mv.toRotateY, mv.toRotateZ,
+                    num(mv.toX, num(cfg.posX, DEFAULT_POS_X)), num(mv.toY, num(cfg.posY, DEFAULT_POS_Y))),
+                timingFunction: mv.timingFunction || 'linear',
+                staticTime: 0,
+                moveTime: Math.max(100, Math.round(num(mv.moveTime, baseMoveTime))),
+            };
+        });
+    }
+
+    function buildModel(sub, cfg, durationMs, effects, moves) {
         const text = Array.from((sub.text || '').trim()).slice(0, 255).join('');
         // 起始时间 = 字幕时间 + 全局时间偏移（ms，可为负，用于微调同步）
         const startTime = Math.max(0, Math.round(sub.time + timeOffset));
@@ -586,26 +611,10 @@
         // 多段运动：坐标 null 时回落到 cfg.posX/posY（跟随样式区/预设定位），
         // 显式数字才用固定坐标。这样竖排/KTV/声明式等 transform 通过 cfg 传递的
         // 位置才能真正生效，而不是被默认 50,85 固定运动钉死在同一点。
-        const moves = (adv.moves && adv.moves.length) ? adv.moves : [{ fromX: null, fromY: null, toX: null, toY: null, moveTime: null, timingFunction: 'linear' }];
-        const animationFrames = moves.map((mv) => {
-            // 动画帧级 scale/rotate：空(null/undefined/'') → 回落顶层 adv.scale/adv.rotate，
-            // 显式数字才用该段自己的拉伸/旋转（与 A 站渲染器 drawDanmakuFrame 语义一致）
-            const frame = (sx, sy, rx, ry, rz, px, py) => ({
-                pos: { x: px, y: py, z: 1 },
-                scale: { x: num(sx, adv.scale.x), y: num(sy, adv.scale.y), z: 1 },
-                rotate: { x: num(rx, adv.rotate.x), y: num(ry, adv.rotate.y), z: num(rz, adv.rotate.z) },
-            });
-            return {
-                from: frame(mv.fromScaleX, mv.fromScaleY, mv.fromRotateX, mv.fromRotateY, mv.fromRotateZ,
-                    num(mv.fromX, num(cfg.posX, DEFAULT_POS_X)), num(mv.fromY, num(cfg.posY, DEFAULT_POS_Y))),
-                to: frame(mv.toScaleX, mv.toScaleY, mv.toRotateX, mv.toRotateY, mv.toRotateZ,
-                    num(mv.toX, num(cfg.posX, DEFAULT_POS_X)), num(mv.toY, num(cfg.posY, DEFAULT_POS_Y))),
-                timingFunction: mv.timingFunction || 'linear',
-                staticTime: 0,
-                // moveTime 空(null/undefined/''）→ 跟随 durationMs；显式数字才固定耗时
-                moveTime: Math.max(100, Math.round(num(mv.moveTime, moveTime))),
-            };
-        });
+        // moves 来源：motion 引擎写入的 l.moves（null=静止）；仅当「未传 moves」（无预设直发路径）
+        // 才回落弹幕模式手动运动 advancedConfig.moves，避免字幕模式预设与弹幕模式共享运动状态。
+        const ms = (moves === undefined) ? advancedConfig.moves : moves;
+        const animationFrames = buildAnimationFrames(ms, cfg, adv, durationMs);
         // 总时长 = 所有段 moveTime 之和
         const totalDur = animationFrames.reduce((a, f) => a + f.moveTime, 0);
 
@@ -654,14 +663,22 @@
         return (preset && preset.effects) ? preset.effects : advancedConfig;
     }
 
+    // 组合是否「逐字拆发」：拆字（chars/words）配逐字延迟/扫光时序，一句话会拆成大量弹幕（每字一条甚至两层）。
+    // UI 据此提示用户注意 A 站弹幕规范、控制发送量，避免刷屏/触发限流。
+    function isCharSplitComposition(comp) {
+        if (!comp) return false;
+        return (comp.split === 'chars' || comp.split === 'words')
+            && (comp.timing === 'stagger' || comp.timing === 'sweep');
+    }
+
     // 初始化预设：只合并「已主动保存」的微调 options（自定义预设不持久化，刷新后需重新导入）
     function initPresets() {
         getAllPresets().forEach(applySavedOptions);
     }
 
     // 用 config 生成 model，但用伪字幕覆盖时间与文本
-    function modelFrom(cfg, text, timeMs, durationMs, effects) {
-        return buildModel({ time: timeMs, text: text }, cfg, durationMs, effects);
+    function modelFrom(cfg, text, timeMs, durationMs, effects, moves) {
+        return buildModel({ time: timeMs, text: text }, cfg, durationMs, effects, moves);
     }
 
     // ============================================================
@@ -776,12 +793,12 @@
     }
 
     // 跨句分栏参数声明（供各布局引擎复用）：
-    //   dualDir: none 单排/单列 | vertical 上下分栏 | horizontal 左右分栏（是否分栏 + 方向提示）
-    //   dualX / dualY: 第二句（偶数句）相对第一句的 X/Y 偏移，独立可调（可上下、左右、对角）
+    //   dualDir: none 不分栏 | vertical 上下分栏 | horizontal 左右分栏
+    //   dualX / dualY: 第二句（偶数句）相对第一句的 X/Y 偏移，null=未设置（跟随 dualDir 默认方向），手填数字可覆盖
     const DUAL_DIR_PARAMS = [
         psel('dualDir', '跨句分栏', [{ value: 'none', label: '不分栏' }, { value: 'vertical', label: '上下分栏' }, { value: 'horizontal', label: '左右分栏' }], 'none'),
-        pnum('dualX', '次句偏移X', -100, 100, 1, 0),
-        pnum('dualY', '次句偏移Y', -100, 100, 1, 0),
+        pnum('dualX', '次句偏移X', -100, 100, 1, null),
+        pnum('dualY', '次句偏移Y', -100, 100, 1, null),
     ];
 
     // 宽度模式参数（供拆分引擎复用）：actual 实际宽度（紧凑）| uniform 等宽（整齐）
@@ -794,8 +811,17 @@
         if (dualDir === 'none') { ctx.advanceable = false; return frags; }
         const isEven = (ctx.seq != null) ? (ctx.seq % 2 === 0) : false;
         if (isEven) {
-            const dx = num(pv(params, 'dualX'), 0);
-            const dy = num(pv(params, 'dualY'), 0);
+            // dualDir 决定默认偏移方向：vertical 上下分栏（dualY 下移）、horizontal 左右分栏（dualX 右移）。
+            // 手填 dualX/dualY（非 null）覆盖默认方向，未填的维度为 0。
+            const DEFAULT_DUAL = 8;
+            let dx = pv(params, 'dualX', null);
+            let dy = pv(params, 'dualY', null);
+            if (dx == null && dy == null) {
+                if (dualDir === 'vertical') dy = DEFAULT_DUAL;
+                else dx = DEFAULT_DUAL;
+            }
+            dx = num(dx, 0);
+            dy = num(dy, 0);
             frags.forEach((f) => {
                 if (f.posX != null) f.posX += dx;
                 if (f.posY != null) f.posY += dy;
@@ -1046,9 +1072,112 @@
             } },
         },
 
-        // 运动：层[] → 层[]（写入运动参数；当前仅 none，未来扩展缩放/跳跳等）
+        // 运动：层[] → 层[]（写入运动轨迹；none 静止、advanced 多段运动 + 常用预设效果）
+        // 都显式写 l.moves（null=静止），让 buildModel 区分「走管线（motion 引擎定运动）」与
+        // 「不走管线（无预设直发）」，避免字幕模式预设回落弹幕模式手动运动 advancedConfig.moves。
+        // 效果类引擎：据 ctx.dur（时长）生成 moves；位置按层取 l.posX/l.posY（布局引擎逐字位置），
+        // 未布局时回落 ctx.cfg.posX/posY（全局样式位置）。绝不能用 ctx.cfg 全局坐标写死——
+        // 否则会覆盖布局引擎（vertical/grid 等）排好的逐字位置，所有字收拢到同一点。
         motion: {
-            'none': { label: '静止', desc: '无额外运动', params: [], apply(layers) { return layers; } },
+            'none': { label: '静止', desc: '无额外运动', params: [], apply(layers) {
+                layers.forEach((l) => { l.moves = null; });
+                return layers;
+            } },
+            'advanced': { label: '多段运动', desc: '按 options.moves 定义多段运动轨迹', params: [], apply(layers, params) {
+                // 仅读 options.moves 显式声明；不回落 advancedConfig（弹幕模式手动运动只属于无预设直发路径）
+                const moves = (params && params.moves && params.moves.length) ? params.moves : null;
+                layers.forEach((l) => { l.moves = moves; });
+                return layers;
+            } },
+            'bounce': { label: '弹跳', desc: '文字在各自位置上下弹跳，幅度逐次衰减', params: [
+                pnum('bounce.height', '幅度(%)', 1, 50, 1, 10),
+                pnum('bounce.times', '次数', 1, 8, 1, 3),
+            ], apply(layers, params, ctx) {
+                const height = num(pv(params, 'bounce.height'), 10);
+                let times = Math.max(1, Math.floor(num(pv(params, 'bounce.times'), 3)));
+                // 每跳至少 200ms（上下两段 × 100ms），时长不足时自动减次数，避免总时长超字幕档期导致相邻句重叠
+                const maxTimes = Math.max(1, Math.floor(ctx.dur / 200));
+                if (times > maxTimes) times = maxTimes;
+                const seg = Math.max(100, Math.round(ctx.dur / (times * 2)));
+                layers.forEach((l) => {
+                    // 按层取布局位置（无布局时回落全局样式位置），峰值/起点都用该层自己的坐标
+                    const bx = num(l.posX, num(ctx.cfg.posX, DEFAULT_POS_X));
+                    const by = num(l.posY, num(ctx.cfg.posY, DEFAULT_POS_Y));
+                    const moves = [];
+                    for (let i = 0; i < times; i++) {
+                        const amp = height / (i + 1);   // 逐次衰减
+                        const peak = Math.max(1, by - amp);
+                        moves.push({ fromX: bx, fromY: by, toX: bx, toY: peak, moveTime: seg, timingFunction: 'ease-out' });
+                        moves.push({ fromX: bx, fromY: peak, toX: bx, toY: by, moveTime: seg, timingFunction: 'ease-in' });
+                    }
+                    l.moves = moves;
+                });
+                return layers;
+            } },
+            'pop': { label: '弹入', desc: '文字从缩小弹性放大到正常，带过冲回弹', params: [
+                pnum('pop.overshoot', '过冲', 0, 0.5, 0.05, 0.1),
+            ], apply(layers, params, ctx) {
+                const over = num(pv(params, 'pop.overshoot'), 0.1);
+                // 位置全程不变：坐标不写（null），buildAnimationFrames 回落每层 cfg.posX/posY
+                let moves;
+                if (ctx.dur >= 200) {
+                    // 两段（放大 + 回弹），各自 ≥100ms 且总和 = dur，避免总时长溢出
+                    const t1 = Math.min(ctx.dur - 100, Math.max(100, Math.round(ctx.dur * 0.7)));
+                    const t2 = ctx.dur - t1;
+                    moves = [
+                        { fromScaleX: 0.3, fromScaleY: 0.3, toScaleX: 1 + over, toScaleY: 1 + over, moveTime: t1, timingFunction: 'ease-out' },
+                        { fromScaleX: 1 + over, fromScaleY: 1 + over, toScaleX: 1, toScaleY: 1, moveTime: t2, timingFunction: 'ease-in-out' },
+                    ];
+                } else {
+                    // 时长不足两段时退化为单段放大（不回弹）
+                    moves = [
+                        { fromScaleX: 0.3, fromScaleY: 0.3, toScaleX: 1, toScaleY: 1, moveTime: ctx.dur, timingFunction: 'ease-out' },
+                    ];
+                }
+                layers.forEach((l) => { l.moves = moves; });
+                return layers;
+            } },
+            'spin': { label: '旋转', desc: '文字绕 Z 轴旋转指定圈数', params: [
+                pnum('spin.turns', '圈数', 0.5, 5, 0.5, 1),
+                psel('spin.direction', '方向', [{ value: 'cw', label: '顺时针' }, { value: 'ccw', label: '逆时针' }], 'cw'),
+            ], apply(layers, params, ctx) {
+                const turns = num(pv(params, 'spin.turns'), 1);
+                const dir = pv(params, 'spin.direction', 'cw') === 'ccw' ? -1 : 1;
+                // 位置全程不变：坐标不写（null），buildAnimationFrames 回落每层 cfg.posX/posY
+                const moves = [
+                    { fromRotateZ: 0, toRotateZ: dir * turns * 360, moveTime: ctx.dur, timingFunction: 'linear' },
+                ];
+                layers.forEach((l) => { l.moves = moves; });
+                return layers;
+            } },
+            'slide': { label: '滑入', desc: '文字从屏幕边缘滑到各自位置', params: [
+                psel('slide.from', '方向', [{ value: 'left', label: '从左' }, { value: 'right', label: '从右' }, { value: 'top', label: '从上' }, { value: 'bottom', label: '从下' }], 'left'),
+            ], apply(layers, params, ctx) {
+                const from = pv(params, 'slide.from', 'left');
+                const anchor = num(ctx.cfg.anchor, 4);
+                const col = anchor % 3, row = Math.floor(anchor / 3);
+                const M = 5;   // 出屏余量（%）
+                layers.forEach((l) => {
+                    // 终点 = 该层布局位置（无布局时回落全局样式位置）
+                    const bx = num(l.posX, num(ctx.cfg.posX, DEFAULT_POS_X));
+                    const by = num(l.posY, num(ctx.cfg.posY, DEFAULT_POS_Y));
+                    // 文本尺寸估算（%，纯逻辑）：每字符约 4% 宽、块高约 10%；据此按锚点列/行算「完全出屏」的起点
+                    const w = Math.min(90, Math.max(10, (l.text || '').length * 4));
+                    const h = 10;
+                    let fromX = bx, fromY = by;
+                    if (from === 'left' || from === 'right') {
+                        const off = from === 'left' ? [-(w + M), -(w / 2 + M), -M] : [100 + M, 100 + w / 2 + M, 100 + w + M];
+                        fromX = off[col];
+                    } else {
+                        const off = from === 'top' ? [-(h + M), -(h / 2 + M), -M] : [100 + M, 100 + h / 2 + M, 100 + h + M];
+                        fromY = off[row];
+                    }
+                    l.moves = [
+                        { fromX, fromY, toX: bx, toY: by, moveTime: ctx.dur, timingFunction: 'ease-out' },
+                    ];
+                });
+                return layers;
+            } },
         },
     };
 
@@ -1093,7 +1222,7 @@
             if (l.posX != null) c.posX = l.posX;
             if (l.posY != null) c.posY = l.posY;
             if (l.color != null) c.color = l.color;
-            return modelFrom(c, l.text, l.time, l.duration, effects);
+            return modelFrom(c, l.text, l.time, l.duration, effects, l.moves);
         });
     }
 
@@ -2783,11 +2912,12 @@
                 id,
                 name,
                 desc: `由编辑器导出的全字段预设（含样式与运动，可调字段 ${params.length} 个）`,
-                transform: 'none',
-                options: {},
+                // 运动走 motion 引擎（多段运动），样式与高级字段分别走 options/effects
+                composition: { split: 'none', layout: 'none', color: 'single', timing: 'uniform', motion: 'advanced' },
+                options: { moves: advancedConfig.moves.map((m) => Object.assign({}, m)) },
                 params,
                 owns: hasFixedCoords ? ['posX', 'posY'] : [],
-                // 高级字段统一放 effects：导入后批量发送会应用这些字段
+                // 高级字段（静态）放 effects：导入后批量发送会应用这些字段
                 effects: {
                     zIndex: advancedConfig.zIndex,
                     rotate: Object.assign({}, advancedConfig.rotate),
@@ -2795,7 +2925,6 @@
                     blur: advancedConfig.blur,
                     shine: advancedConfig.shine ? Object.assign({}, advancedConfig.shine) : null,
                     shadow: advancedConfig.shadow ? Object.assign({}, advancedConfig.shadow) : null,
-                    moves: advancedConfig.moves.map((m) => Object.assign({}, m)),
                 },
             };
             // 弹窗补全命名/描述/作者后再导出 JSON（作者默认填当前 A 站昵称 + uid）
@@ -2818,7 +2947,14 @@
     function updatePresetUI() {
         const preset = getActivePreset();
         const desc = $('#cf-preset-desc');
-        if (desc) desc.textContent = preset ? (preset.desc || '') : '';
+        if (desc) {
+            let d = preset ? (preset.desc || '') : '';
+            // 拆字 + 逐字延迟/扫光预设会拆发大量弹幕，提示注意 A 站弹幕规范
+            if (preset && isCharSplitComposition(activeCompositionOf(preset))) {
+                d += (d ? '　' : '') + '⚠️ 逐字拆发，弹幕量大，请注意 A 站弹幕规范';
+            }
+            desc.textContent = d;
+        }
         const sub2Row = $('#cf-sub2-row');
         if (sub2Row) sub2Row.style.display = (preset && preset.transform === 'multi-lang') ? '' : 'none';
         // 保存/恢复按钮：有可调参数、或带 effects、或带 options 时显示（带 effects 的预设也能一键还原）
@@ -3369,17 +3505,41 @@
             sel.addEventListener('change', () => {
                 devDraft[stage.key] = sel.value;
                 renderDevParams(wrap, stage.key);
+                renderDevSplitTip(mask);
                 persistDevDraft();
             });
             renderDevParams(wrap, stage.key);
         });
+        renderDevSplitTip(mask);
+    }
+
+    // 开发面板：逐字拆发提示（拆字 + 逐字延迟/扫光时弹幕量极大）
+    function renderDevSplitTip(mask) {
+        const body = mask.querySelector('#cf-dev-body');
+        if (!body) return;
+        let tip = body.querySelector('.cf-dev-split-tip');
+        if (isCharSplitComposition(devDraft)) {
+            if (!tip) {
+                tip = document.createElement('div');
+                tip.className = 'cf-dev-split-tip';
+                body.insertBefore(tip, body.firstChild);
+            }
+            tip.textContent = '⚠️ 当前组合逐字拆发，每句拆成大量弹幕（约字数×N 倍），请控制发送量、注意 A 站弹幕规范';
+        } else if (tip) {
+            tip.remove();
+        }
     }
 
     function renderDevParams(wrap, stageKey) {
         const engine = ENGINES[stageKey][devDraft[stageKey]];
         const box = wrap.querySelector('.cf-dev-params');
         const descEl = wrap.querySelector('.cf-dev-desc');
-        if (descEl) descEl.textContent = engine.desc || '';
+        if (descEl) {
+            // 说明文字受布局限制会被截断，改成 ⓘ 图标 + title 悬浮提示完整说明
+            const d = engine.desc || '';
+            descEl.textContent = d ? 'ⓘ' : '';
+            descEl.title = d;
+        }
         box.innerHTML = '';
         if (!engine.params.length) { box.style.display = 'none'; return; }
         box.style.display = '';
@@ -3882,11 +4042,12 @@
         .cf-dev-text-input{flex:1;min-height:42px;border:1px solid #e5e5e5;border-radius:3px;font-size:13px;color:rgba(0,0,0,.65);background:#fff;padding:4px 8px;outline:none;resize:vertical;font-family:inherit;line-height:1.5}
         .cf-dev-text-input:focus{border-color:#fd4c5d}
         .cf-dev-body{flex:1;overflow-y:auto;padding:0 14px 10px;display:flex;flex-direction:column;gap:8px}
+        .cf-dev-split-tip{font-size:11px;color:#fa8c16;background:#fff7e6;border:1px solid #ffd591;border-radius:3px;padding:5px 8px;line-height:1.5}
         .cf-dev-stage{border:1px solid #e5e5e5;border-radius:4px;padding:8px;background:#fafafa}
         .cf-dev-stage-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
         .cf-dev-stage-head label{font-size:12px;font-weight:600;color:#333;min-width:32px}
         .cf-dev-stage-head select{flex:1;height:22px;border:1px solid #e5e5e5;border-radius:3px;font-size:12px;color:rgba(0,0,0,.65);background:#fff;padding:0 6px;outline:none}
-        .cf-dev-desc{font-size:11px;color:#bbb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px}
+        .cf-dev-desc{font-size:12px;color:#999;cursor:help;flex:none;line-height:22px;user-select:none}
         .cf-dev-params{display:flex;flex-direction:column;gap:4px}
         .cf-dev-param-row{margin-bottom:0}
         .cf-dev-param-row label{min-width:80px}

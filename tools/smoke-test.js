@@ -194,6 +194,68 @@ const TEST = `
     const mDef = buildModel({ time: 1000, text: '测试' }, currentStyleConfig, 3000, null);
     assert(mDef.zIndex === DEFAULT_ZINDEX, 'buildModel 无 effects 时回落 advancedConfig 默认层级');
 
+    // 14.8) buildAnimationFrames 纯函数 + motion 'advanced' 引擎透传
+    const advB = { scale: { x: 1, y: 1, z: 1 }, rotate: { x: 0, y: 0, z: 0 } };
+    const cfgB = { posX: 50, posY: 85, moveTime: 3000 };
+    const afDef = buildAnimationFrames(null, cfgB, advB, 3000);
+    assert(afDef.length === 1 && afDef[0].from.pos.x === 50 && afDef[0].from.pos.y === 85 && afDef[0].moveTime === 3000, '默认单段 + 坐标/moveTime 回落');
+    const afExp = buildAnimationFrames([{ fromX: 10, fromY: 20, toX: 90, toY: 80, moveTime: 500, timingFunction: 'ease-in' }], cfgB, advB, 3000);
+    assert(afExp[0].from.pos.x === 10 && afExp[0].to.pos.y === 80 && afExp[0].moveTime === 500 && afExp[0].timingFunction === 'ease-in', '显式坐标/moveTime/缓动');
+    const mvAdv = [{ fromX: 5, fromY: 6, toX: 7, toY: 8, moveTime: 500 }];
+    const ly = ENGINES.motion['advanced'].apply([{ text: '甲' }], { moves: mvAdv });
+    assert(ly[0].moves === mvAdv, 'motion advanced 应写 l.moves');
+    const mMv = buildModel({ time: 1000, text: '测试' }, currentStyleConfig, 3000, null, mvAdv);
+    assert(mMv.animationFrames[0].from.pos.x === 5 && mMv.animationFrames[0].to.pos.x === 7, 'buildModel 应用显式 moves');
+
+    // 14.9) motion 效果引擎：bounce/pop/spin/slide 生成正确 moves
+    const mctx = { cfg: { posX: 50, posY: 80 }, dur: 1000 };
+    const bounce = ENGINES.motion['bounce'].apply([{ text: '甲' }], { bounce: { height: 10, times: 2 } }, mctx);
+    assert(bounce[0].moves.length === 4, 'bounce 2 次应 4 段');
+    assert(bounce[0].moves[0].toY === 70 && bounce[0].moves[0].fromY === 80, 'bounce 第一段向上');
+    assert(bounce[0].moves[2].toY === 75, 'bounce 幅度逐次衰减（第2跳峰值 75 > 第1跳 70）');
+    const pop = ENGINES.motion['pop'].apply([{ text: '甲' }], { pop: { overshoot: 0.2 } }, mctx);
+    assert(pop[0].moves.length === 2 && pop[0].moves[0].toScaleX === 1.2 && pop[0].moves[1].toScaleX === 1, 'pop 过冲回弹');
+    const spin = ENGINES.motion['spin'].apply([{ text: '甲' }], { spin: { turns: 2, direction: 'cw' } }, mctx);
+    assert(spin[0].moves.length === 1 && spin[0].moves[0].toRotateZ === 720, 'spin 2 圈 = 720°');
+    const slide = ENGINES.motion['slide'].apply([{ text: '甲' }], { slide: { from: 'right' } }, mctx);
+    assert(slide[0].moves.length === 1 && slide[0].moves[0].fromX === 110 && slide[0].moves[0].toX === 50, 'slide 从右滑入');
+
+    // 14.10) 布局 + 效果组合：效果引擎用每层布局位置，不覆盖布局（vertical/grid 逐字位置不被收拢）
+    const layered = [{ text: '甲', posX: 10, posY: 30 }, { text: '乙', posX: 90, posY: 30 }];
+    const bL = ENGINES.motion['bounce'].apply(layered, { bounce: { height: 10, times: 1 } }, { cfg: { posX: 50, posY: 80 }, dur: 1000 });
+    assert(bL[0].moves[0].fromX === 10 && bL[0].moves[0].fromY === 30, 'bounce 用第1层布局位置');
+    assert(bL[1].moves[0].fromX === 90 && bL[1].moves[0].fromY === 30, 'bounce 用第2层布局位置');
+    const sL = ENGINES.motion['slide'].apply(layered, { slide: { from: 'left' } }, { cfg: { posX: 50, posY: 80 }, dur: 1000 });
+    assert(sL[0].moves[0].toX === 10 && sL[1].moves[0].toX === 90, 'slide 终点用每层布局位置');
+    const pL = ENGINES.motion['pop'].apply(layered, { pop: { overshoot: 0.1 } }, { cfg: { posX: 50, posY: 80 }, dur: 1000 });
+    assert(pL[0].moves[0].fromX === undefined && pL[0].moves[0].fromY === undefined, 'pop 坐标应为空（回落每层位置）');
+
+    // 14.11) 时长溢出：bounce 自动减次数、pop 短时长单段；slide 起点按锚点列
+    const bShort = ENGINES.motion['bounce'].apply([{ text: '甲' }], { bounce: { height: 10, times: 3 } }, { cfg: { posX: 50, posY: 80 }, dur: 200 });
+    assert(bShort[0].moves.length === 2, 'bounce dur=200 应减到 1 次（2 段）');
+    const pShort = ENGINES.motion['pop'].apply([{ text: '甲' }], { pop: { overshoot: 0.1 } }, { cfg: { posX: 50, posY: 80 }, dur: 150 });
+    assert(pShort[0].moves.length === 1, 'pop dur<200 应单段');
+    const sA0 = ENGINES.motion['slide'].apply([{ text: '甲' }], { slide: { from: 'left' } }, { cfg: { posX: 50, posY: 80, anchor: 0 }, dur: 1000 });
+    assert(sA0[0].moves[0].fromX === -15, 'slide anchor=0(col=0) left 起点 = -(w+m): ' + sA0[0].moves[0].fromX);
+    const sA2 = ENGINES.motion['slide'].apply([{ text: '甲' }], { slide: { from: 'left' } }, { cfg: { posX: 50, posY: 80, anchor: 2 }, dur: 1000 });
+    assert(sA2[0].moves[0].fromX === -5, 'slide anchor=2(col=2) left 起点 = -m: ' + sA2[0].moves[0].fromX);
+
+    // 14.12) isCharSplitComposition：拆字 + 逐字延迟/扫光才判拆发（供弹幕规范提示用）
+    assert(isCharSplitComposition({ split: 'chars', timing: 'stagger' }) === true, 'chars+stagger 应判拆发');
+    assert(isCharSplitComposition({ split: 'words', timing: 'sweep' }) === true, 'words+sweep 应判拆发');
+    assert(isCharSplitComposition({ split: 'none', timing: 'stagger' }) === false, 'none 不拆发');
+    assert(isCharSplitComposition({ split: 'chars', timing: 'uniform' }) === false, 'uniform 不拆发');
+    assert(isCharSplitComposition(null) === false, 'null 不拆发');
+
+    // 14.13) applySeqOffset：dualDir 决定默认偏移方向（上下分栏下移、左右分栏右移）
+    const mkFrag = () => [{ posX: 50, posY: 50 }];
+    const rV = applySeqOffset(mkFrag(), { dualDir: 'vertical' }, { seq: 2, advanceable: false });
+    assert(rV[0].posY === 58 && rV[0].posX === 50, 'vertical 默认下移 8: ' + JSON.stringify(rV[0]));
+    const rH = applySeqOffset(mkFrag(), { dualDir: 'horizontal' }, { seq: 2, advanceable: false });
+    assert(rH[0].posX === 58 && rH[0].posY === 50, 'horizontal 默认右移 8: ' + JSON.stringify(rH[0]));
+    const rO = applySeqOffset(mkFrag(), { dualDir: 'vertical', dualX: 5 }, { seq: 2, advanceable: false });
+    assert(rO[0].posX === 55 && rO[0].posY === 50, '手填 dualX 覆盖默认方向: ' + JSON.stringify(rO[0]));
+
     // 15) sendDanmaku 取消路径：中途取消返回部分发送（sent<total），不再误报整句完成
     (async () => {
         try {
