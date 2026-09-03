@@ -7,6 +7,13 @@
         if (!sel) return;
         const cur = activePresetId;
         sel.innerHTML = getAllPresets().map((p) => `<option value="${escapeHtml(p.id)}"${p.id === cur ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+        // 作者不直接展示在选项里，改用旁边的 ⓘ 图标悬浮显示当前选中预设的作者
+        const active = getActivePreset();
+        const authorEl = $('#cf-preset-author');
+        if (authorEl) {
+            authorEl.style.display = (active && active.author) ? '' : 'none';
+            authorEl.title = (active && active.author) ? ('作者：' + active.author) : '';
+        }
         updatePresetUI();
     }
 
@@ -20,6 +27,13 @@
                 d += (d ? '　' : '') + '⚠️ 逐字拆发，弹幕量大，请注意 A 站弹幕规范';
             }
             desc.textContent = d;
+            // 作者用 ⓘ 图标悬浮展示，不直接拼在文本里
+            if (preset && preset.author) {
+                desc.textContent = d + (d ? '　' : '') + 'ⓘ';
+                desc.title = '作者：' + preset.author;
+            } else {
+                desc.title = '';
+            }
         }
         const sub2Row = $('#cf-sub2-row');
         if (sub2Row) sub2Row.style.display = (preset && preset.transform === 'multi-lang') ? '' : 'none';

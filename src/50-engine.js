@@ -66,14 +66,24 @@
         return (widthMode === 'actual') ? Math.max(0.3, measureTextPx(text, fs, ff) / unit) : 1;
     }
 
-    // 按字拆：每个字符一个片段（英文按字母），空白跳过，标点单独
+    // 按字拆：每个字符一个片段（英文按字母），空白跳过，标点贴附到前一个字符
     function splitChars(text, fontSize, fontFamily, widthMode) {
         const fs = fontSize || 24;
         const ff = fontFamily || 'SimHei';
         const unit = measureTextPx('国', fs, ff) || fs;
-        return Array.from(text)
-            .filter((ch) => !/^\s+$/u.test(ch))
-            .map((ch) => ({ text: ch, w: calcW(ch, fs, ff, unit, widthMode) }));
+        const out = [];
+        for (const ch of Array.from(text)) {
+            if (/^\s+$/u.test(ch)) continue;
+            if (out.length && charKind(ch) === 'punct') {
+                out[out.length - 1].text += ch;   // 标点贴附，避免顿号/连字符单独成字扫光
+            } else {
+                out.push({ text: ch });
+            }
+        }
+        for (const t of out) {
+            t.w = calcW(t.text, fs, ff, unit, widthMode);
+        }
+        return out;
     }
 
     // 按词拆：中日韩/假名/韩文/emoji 按字，字母数字按词，标点贴附到前一个片段，空白跳过
@@ -285,8 +295,8 @@
             'grid': { label: '网格', desc: '按字数自动分栏：竖排每列、横排每行，字数根据屏幕空间自动算（0=自动）', params: [
                 psel('flow', '流向', [{ value: 'col-first', label: '先竖后横' }, { value: 'row-first', label: '先横后竖' }], 'col-first'),
                 pnum('span', '每行/列字数(0=自动)', 0, 20, 1, 0),
-                pnum('step.x', '列间距X', 0, 50, 0.5, 0),
-                pnum('step.y', '行间距Y', 0, 20, 0.1, 0),
+                pnum('step.x', '列间距X', 0, 50, 0.5, 6),
+                pnum('step.y', '行间距Y', 0, 20, 0.1, 1.8),
                 pnum('base.x', '起点X', 0, 100, 1, 50),
                 pnum('base.y', '起点Y', 0, 100, 1, 50),
                 ptext('colsX', '列X列表', '', '留空等距，如 40,46,52'),
@@ -294,8 +304,8 @@
                 ...DUAL_DIR_PARAMS,
             ], apply(frags, params) {
                 const flow = pv(params, 'flow', 'col-first');
-                const sx = num(pv(params, 'step.x'), 0);
-                const sy = num(pv(params, 'step.y'), 0);
+                const sx = num(pv(params, 'step.x'), 6);
+                const sy = num(pv(params, 'step.y'), 1.8);
                 const bx = num(pv(params, 'base.x'), 50);
                 const by = num(pv(params, 'base.y'), 50);
                 // 每行/列字数：填正数用固定值；0=自动按屏幕可用空间算（竖排看高度，横排看宽度）

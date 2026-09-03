@@ -165,6 +165,7 @@
         #cf-sub-panel .cf-slice-chk{margin-left:8px;display:inline-flex;align-items:center;gap:3px;font-size:11px;color:#666;cursor:pointer;white-space:nowrap;font-weight:400}
         #cf-sub-panel .cf-slice-chk input{accent-color:#fd4c5d;cursor:pointer}
         #cf-sub-panel .cf-preset-desc{font-size:11px;color:#999;margin-bottom:8px}
+        #cf-sub-panel .cf-preset-author{font-size:12px;color:#999;cursor:help;margin-left:4px;vertical-align:middle;user-select:none}
         #cf-sub-panel .cf-preset-params{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
         #cf-sub-panel .cf-param-group-title{font-size:11px;color:#fd4c5d;font-weight:600;margin:8px 0 2px;padding-bottom:2px;border-bottom:1px solid #f0f0f0}
         #cf-sub-panel .cf-preset-param-row{margin-bottom:2px}

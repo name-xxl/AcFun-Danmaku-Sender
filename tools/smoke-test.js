@@ -120,6 +120,22 @@ const TEST = `
     assert(kmodels.length === 40, 'KTV 20 字应展开 40 条，实际 ' + kmodels.length);
     activePresetId = savedPreset;
 
+    // 12.5) 内置预设描述与行为相符性：
+    //   竖排字幕 desc「每句拆成单字纵向堆叠」—— 单字、同一 X 纵向递增
+    activePresetId = 'vertical';
+    const vModels = expandSub({ time: 1000, text: '竖排测试' }, currentStyleConfig, 3000, 1, null);
+    assert(vModels.length === 4, '竖排 4 字应展开 4 条，实际 ' + vModels.length);
+    const vXs = new Set(vModels.map((m) => m.animationFrames[0].from.pos.x));
+    const vYs = vModels.map((m) => m.animationFrames[0].from.pos.y);
+    assert(vXs.size === 1, '竖排应同一 X（纵向），实际 ' + [...vXs].join(','));
+    assert(vYs[0] < vYs[1] && vYs[1] < vYs[2] && vYs[2] < vYs[3], '竖排应 Y 递增（自上而下）: ' + vYs.join(','));
+    //   KTV 唱词 desc「逐字扫光，唱到的字变亮」—— 底层 + 主层两层（扫光）
+    activePresetId = 'karaoke';
+    const k2 = expandSub({ time: 1000, text: '一二' }, currentStyleConfig, 3000, 1, null);
+    assert(k2.length === 4, 'KTV 2 字应展开 4 条（每字两层），实际 ' + k2.length);
+    assert(k2.every((m) => m.wordStyle.color), 'KTV 各层应有颜色');
+    activePresetId = savedPreset;
+
     // 13) calcDurationMs：endTime 优先、相邻反推、末尾默认
     subs = [
         { time: 0, endTime: 2000, text: 'a' },

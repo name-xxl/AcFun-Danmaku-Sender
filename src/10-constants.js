@@ -43,8 +43,8 @@
     const BUILTIN_PRESETS = [
         { id: 'none', name: '无预设', desc: '原样发送，一条字幕一条弹幕', transform: 'none', options: {}, params: [] },
         {
-            id: 'vertical', name: '竖排字幕', desc: '每句拆成单字纵向堆叠',
-            transform: 'chars-vertical',
+            id: 'vertical', name: '竖排字幕', desc: '每句拆成单字纵向堆叠', author: 'AC在爱一直在',
+            composition: { split: 'chars', layout: 'vertical', color: 'single', timing: 'stagger', motion: 'none' },
             options: { direction: 'down', gap: 1.8, charDelay: 60, startX: 50, startY: 72 },
             params: [
                 { key: 'direction', label: '方向', type: 'select', choices: [{ value: 'down', label: '向下' }, { value: 'up', label: '向上' }] },
@@ -55,8 +55,8 @@
             ],
         },
         {
-            id: 'karaoke', name: 'KTV 唱词', desc: '逐字扫光，唱到的字变亮',
-            transform: 'chars-karaoke',
+            id: 'karaoke', name: 'KTV 唱词', desc: '逐字扫光，唱到的字变亮', author: 'AC在爱一直在',
+            composition: { split: 'chars', layout: 'horizontal', color: 'karaoke', timing: 'sweep', motion: 'none' },
             options: { dualDir: 'none', dualX: 0, dualY: 8, charWidth: 2.8, rowY: 78, startX: 8, sungColor: KTV_SUNG_COLOR, unsungColor: KTV_UNSUNG_COLOR },
             params: [
                 { key: 'dualDir', label: '跨句分栏', type: 'select', group: '布局', choices: [
@@ -71,30 +71,6 @@
                 { key: 'rowY', label: '行Y', type: 'number', min: 0, max: 100, step: 1 },
                 { key: 'sungColor', label: '唱到色', type: 'color' },
                 { key: 'unsungColor', label: '待唱色', type: 'color' },
-            ],
-        },
-        {
-            id: 'vertical-dual', name: '双排竖排', desc: '竖排，屏幕放不下自动分栏，短句单列',
-            transform: 'declarative',
-            options: {
-                split: 'chars', flow: 'col-first', span: 0,
-                step: { x: 6, y: 1.8, time: 60 },
-                base: { x: 40, y: 70 },
-                color: '#ffffff',
-                highlight: { enabled: false },
-            },
-            params: [
-                { key: 'flow', label: '流向', type: 'select', group: '布局', choices: [
-                    { value: 'col-first', label: '先竖后横' },
-                    { value: 'row-first', label: '先横后竖' },
-                ]},
-                { key: 'span', label: '每行/列字数(0=自动)', type: 'number', min: 0, max: 20, step: 1, group: '布局' },
-                { key: 'step.x', label: '列间距X', type: 'number', min: 0, max: 50, step: 0.5, group: '间距' },
-                { key: 'step.y', label: '行间距Y', type: 'number', min: 0, max: 20, step: 0.1, group: '间距' },
-                { key: 'step.time', label: '逐字延迟(ms)', type: 'number', min: 0, max: 500, step: 10, group: '间距' },
-                { key: 'base.x', label: '起点X', type: 'number', min: 0, max: 100, step: 1, group: '位置' },
-                { key: 'base.y', label: '起点Y', type: 'number', min: 0, max: 100, step: 1, group: '位置' },
-                { key: 'color', label: '文字色', type: 'color', group: '样式' },
             ],
         },
     ];

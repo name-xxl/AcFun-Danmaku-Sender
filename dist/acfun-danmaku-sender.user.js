@@ -61,8 +61,8 @@
     const BUILTIN_PRESETS = [
         { id: 'none', name: '无预设', desc: '原样发送，一条字幕一条弹幕', transform: 'none', options: {}, params: [] },
         {
-            id: 'vertical', name: '竖排字幕', desc: '每句拆成单字纵向堆叠',
-            transform: 'chars-vertical',
+            id: 'vertical', name: '竖排字幕', desc: '每句拆成单字纵向堆叠', author: 'AC在爱一直在',
+            composition: { split: 'chars', layout: 'vertical', color: 'single', timing: 'stagger', motion: 'none' },
             options: { direction: 'down', gap: 1.8, charDelay: 60, startX: 50, startY: 72 },
             params: [
                 { key: 'direction', label: '方向', type: 'select', choices: [{ value: 'down', label: '向下' }, { value: 'up', label: '向上' }] },
@@ -73,8 +73,8 @@
             ],
         },
         {
-            id: 'karaoke', name: 'KTV 唱词', desc: '逐字扫光，唱到的字变亮',
-            transform: 'chars-karaoke',
+            id: 'karaoke', name: 'KTV 唱词', desc: '逐字扫光，唱到的字变亮', author: 'AC在爱一直在',
+            composition: { split: 'chars', layout: 'horizontal', color: 'karaoke', timing: 'sweep', motion: 'none' },
             options: { dualDir: 'none', dualX: 0, dualY: 8, charWidth: 2.8, rowY: 78, startX: 8, sungColor: KTV_SUNG_COLOR, unsungColor: KTV_UNSUNG_COLOR },
             params: [
                 { key: 'dualDir', label: '跨句分栏', type: 'select', group: '布局', choices: [
@@ -89,30 +89,6 @@
                 { key: 'rowY', label: '行Y', type: 'number', min: 0, max: 100, step: 1 },
                 { key: 'sungColor', label: '唱到色', type: 'color' },
                 { key: 'unsungColor', label: '待唱色', type: 'color' },
-            ],
-        },
-        {
-            id: 'vertical-dual', name: '双排竖排', desc: '竖排，屏幕放不下自动分栏，短句单列',
-            transform: 'declarative',
-            options: {
-                split: 'chars', flow: 'col-first', span: 0,
-                step: { x: 6, y: 1.8, time: 60 },
-                base: { x: 40, y: 70 },
-                color: '#ffffff',
-                highlight: { enabled: false },
-            },
-            params: [
-                { key: 'flow', label: '流向', type: 'select', group: '布局', choices: [
-                    { value: 'col-first', label: '先竖后横' },
-                    { value: 'row-first', label: '先横后竖' },
-                ]},
-                { key: 'span', label: '每行/列字数(0=自动)', type: 'number', min: 0, max: 20, step: 1, group: '布局' },
-                { key: 'step.x', label: '列间距X', type: 'number', min: 0, max: 50, step: 0.5, group: '间距' },
-                { key: 'step.y', label: '行间距Y', type: 'number', min: 0, max: 20, step: 0.1, group: '间距' },
-                { key: 'step.time', label: '逐字延迟(ms)', type: 'number', min: 0, max: 500, step: 10, group: '间距' },
-                { key: 'base.x', label: '起点X', type: 'number', min: 0, max: 100, step: 1, group: '位置' },
-                { key: 'base.y', label: '起点Y', type: 'number', min: 0, max: 100, step: 1, group: '位置' },
-                { key: 'color', label: '文字色', type: 'color', group: '样式' },
             ],
         },
     ];
@@ -710,14 +686,24 @@
         return (widthMode === 'actual') ? Math.max(0.3, measureTextPx(text, fs, ff) / unit) : 1;
     }
 
-    // 按字拆：每个字符一个片段（英文按字母），空白跳过，标点单独
+    // 按字拆：每个字符一个片段（英文按字母），空白跳过，标点贴附到前一个字符
     function splitChars(text, fontSize, fontFamily, widthMode) {
         const fs = fontSize || 24;
         const ff = fontFamily || 'SimHei';
         const unit = measureTextPx('国', fs, ff) || fs;
-        return Array.from(text)
-            .filter((ch) => !/^\s+$/u.test(ch))
-            .map((ch) => ({ text: ch, w: calcW(ch, fs, ff, unit, widthMode) }));
+        const out = [];
+        for (const ch of Array.from(text)) {
+            if (/^\s+$/u.test(ch)) continue;
+            if (out.length && charKind(ch) === 'punct') {
+                out[out.length - 1].text += ch;   // 标点贴附，避免顿号/连字符单独成字扫光
+            } else {
+                out.push({ text: ch });
+            }
+        }
+        for (const t of out) {
+            t.w = calcW(t.text, fs, ff, unit, widthMode);
+        }
+        return out;
     }
 
     // 按词拆：中日韩/假名/韩文/emoji 按字，字母数字按词，标点贴附到前一个片段，空白跳过
@@ -929,8 +915,8 @@
             'grid': { label: '网格', desc: '按字数自动分栏：竖排每列、横排每行，字数根据屏幕空间自动算（0=自动）', params: [
                 psel('flow', '流向', [{ value: 'col-first', label: '先竖后横' }, { value: 'row-first', label: '先横后竖' }], 'col-first'),
                 pnum('span', '每行/列字数(0=自动)', 0, 20, 1, 0),
-                pnum('step.x', '列间距X', 0, 50, 0.5, 0),
-                pnum('step.y', '行间距Y', 0, 20, 0.1, 0),
+                pnum('step.x', '列间距X', 0, 50, 0.5, 6),
+                pnum('step.y', '行间距Y', 0, 20, 0.1, 1.8),
                 pnum('base.x', '起点X', 0, 100, 1, 50),
                 pnum('base.y', '起点Y', 0, 100, 1, 50),
                 ptext('colsX', '列X列表', '', '留空等距，如 40,46,52'),
@@ -938,8 +924,8 @@
                 ...DUAL_DIR_PARAMS,
             ], apply(frags, params) {
                 const flow = pv(params, 'flow', 'col-first');
-                const sx = num(pv(params, 'step.x'), 0);
-                const sy = num(pv(params, 'step.y'), 0);
+                const sx = num(pv(params, 'step.x'), 6);
+                const sy = num(pv(params, 'step.y'), 1.8);
                 const bx = num(pv(params, 'base.x'), 50);
                 const by = num(pv(params, 'base.y'), 50);
                 // 每行/列字数：填正数用固定值；0=自动按屏幕可用空间算（竖排看高度，横排看宽度）
@@ -2044,7 +2030,7 @@
                 <div id="cf-preset-body">
                     <div class="cf-row">
                         <label>预设</label>
-                        <select id="cf-preset">${getAllPresets().map((p) => `<option value="${escapeHtml(p.id)}"${p.id === activePresetId ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}</select>
+                        <select id="cf-preset">${getAllPresets().map((p) => `<option value="${escapeHtml(p.id)}"${p.id === activePresetId ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}</select><span class="cf-preset-author" id="cf-preset-author" style="display:none">ⓘ</span>
                     </div>
                     <div class="cf-preset-desc" id="cf-preset-desc"></div>
                     <div class="cf-preset-params" id="cf-preset-params"></div>
@@ -2941,6 +2927,13 @@
         if (!sel) return;
         const cur = activePresetId;
         sel.innerHTML = getAllPresets().map((p) => `<option value="${escapeHtml(p.id)}"${p.id === cur ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+        // 作者不直接展示在选项里，改用旁边的 ⓘ 图标悬浮显示当前选中预设的作者
+        const active = getActivePreset();
+        const authorEl = $('#cf-preset-author');
+        if (authorEl) {
+            authorEl.style.display = (active && active.author) ? '' : 'none';
+            authorEl.title = (active && active.author) ? ('作者：' + active.author) : '';
+        }
         updatePresetUI();
     }
 
@@ -2954,6 +2947,13 @@
                 d += (d ? '　' : '') + '⚠️ 逐字拆发，弹幕量大，请注意 A 站弹幕规范';
             }
             desc.textContent = d;
+            // 作者用 ⓘ 图标悬浮展示，不直接拼在文本里
+            if (preset && preset.author) {
+                desc.textContent = d + (d ? '　' : '') + 'ⓘ';
+                desc.title = '作者：' + preset.author;
+            } else {
+                desc.title = '';
+            }
         }
         const sub2Row = $('#cf-sub2-row');
         if (sub2Row) sub2Row.style.display = (preset && preset.transform === 'multi-lang') ? '' : 'none';
@@ -3999,6 +3999,7 @@
         #cf-sub-panel .cf-slice-chk{margin-left:8px;display:inline-flex;align-items:center;gap:3px;font-size:11px;color:#666;cursor:pointer;white-space:nowrap;font-weight:400}
         #cf-sub-panel .cf-slice-chk input{accent-color:#fd4c5d;cursor:pointer}
         #cf-sub-panel .cf-preset-desc{font-size:11px;color:#999;margin-bottom:8px}
+        #cf-sub-panel .cf-preset-author{font-size:12px;color:#999;cursor:help;margin-left:4px;vertical-align:middle;user-select:none}
         #cf-sub-panel .cf-preset-params{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
         #cf-sub-panel .cf-param-group-title{font-size:11px;color:#fd4c5d;font-weight:600;margin:8px 0 2px;padding-bottom:2px;border-bottom:1px solid #f0f0f0}
         #cf-sub-panel .cf-preset-param-row{margin-bottom:2px}

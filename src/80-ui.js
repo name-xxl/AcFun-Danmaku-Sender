@@ -57,7 +57,7 @@
                 <div id="cf-preset-body">
                     <div class="cf-row">
                         <label>预设</label>
-                        <select id="cf-preset">${getAllPresets().map((p) => `<option value="${escapeHtml(p.id)}"${p.id === activePresetId ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}</select>
+                        <select id="cf-preset">${getAllPresets().map((p) => `<option value="${escapeHtml(p.id)}"${p.id === activePresetId ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}</select><span class="cf-preset-author" id="cf-preset-author" style="display:none">ⓘ</span>
                     </div>
                     <div class="cf-preset-desc" id="cf-preset-desc"></div>
                     <div class="cf-preset-params" id="cf-preset-params"></div>
