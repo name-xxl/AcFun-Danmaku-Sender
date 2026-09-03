@@ -254,7 +254,7 @@
     // （对齐 A 站原生 isShadow/isShine/isBlur 语义）
     function syncAdvEnableUI() {
         // 激活预设带 effects 时，高级编辑整区由预设接管（syncEditorOwnedUI 已禁用），此处不覆盖
-        if (activePresetEffects) return;
+        if (activePresetHasEffects()) return;
         const shOn = (($('#cf-adv-sh-on') || {}).checked) === true;
         const snOn = (($('#cf-adv-sn-on') || {}).checked) === true;
         const blurOn = (($('#cf-adv-blur-on') || {}).checked) === true;

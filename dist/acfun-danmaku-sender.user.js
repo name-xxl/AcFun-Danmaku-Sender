@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AcFun 弹幕字幕发送器 (H5版高级弹幕)
 // @namespace    https://github.com/acfun-danmaku-sender
-// @version      6.3.0
+// @version      6.4.0
 // @description  上传 SRT/ASS/LRC 字幕文件，按时间轴自动发送高级弹幕。仿原生面板，替换 A 站高级弹幕编辑器并提供视频预览。
 // @author       name_xxl
 // @match        *://www.acfun.cn/v/ac*
@@ -39,6 +39,7 @@
     const DEFAULT_MOVE_TIME = 3000;                  // 运动耗时 ms
     const DEFAULT_DURATION = 5000;                   // 默认存活 ms
     const MAX_DURATION = 30000;                      // 弹幕模式持续上限 ms
+    const MODEL_SEND_INTERVAL = 80;                  // 一句字幕展开出的多条弹幕之间的发送间隔 ms（防限流）
     const KTV_SUNG_COLOR = '#ffd700';                // KTV 唱到色
     const KTV_UNSUNG_COLOR = '#9aa0a6';              // KTV 待唱色
     const DEFAULT_SHADOW_PLACEHOLDER = { x: 1, y: 1, blur: 3, color: '#000000' };   // 投影开启时的占位默认
@@ -287,15 +288,15 @@
     }
 
     function parseColor(colorStr) {
-        // ASS 颜色格式 &HAABBGGRR（AA 为 alpha，可能省略）。取后 6 位 BBGGRR。
-        if (colorStr && /^&H[0-9A-Fa-f]{6,8}$/.test(colorStr)) {
-            const hex = colorStr.substring(2).slice(-6);
-            const r = parseInt(hex.slice(4, 6), 16);
-            const g = parseInt(hex.slice(2, 4), 16);
-            const b = parseInt(hex.slice(0, 2), 16);
-            return (r << 16) | (g << 8) | b;
-        }
-        return 0xffffff;
+        // ASS 颜色格式 &HAABBGGRR（AA 为 alpha，可能省略），末尾 & 是 libass 认可的可选后缀。
+        // 用捕获组取出纯 hex（不含 &H 前缀与尾随 &），再取后 6 位 BBGGRR。
+        const m = /^&H([0-9A-Fa-f]{6,8})&?$/.exec(colorStr || '');
+        if (!m) return 0xffffff;
+        const hex = m[1].slice(-6);
+        const r = parseInt(hex.slice(4, 6), 16);
+        const g = parseInt(hex.slice(2, 4), 16);
+        const b = parseInt(hex.slice(0, 2), 16);
+        return (r << 16) | (g << 8) | b;
     }
 
     // LRC 歌词解析：支持 [mm:ss.xx] 和 [mm:ss.xxx] 时间标签，
@@ -533,10 +534,6 @@
         { key: 'effects.shine.color', label: '发光色', group: '外发光', type: 'color', default: DEFAULT_SHINE_PLACEHOLDER.color },
     ];
 
-    // 激活预设带 effects 时，覆盖 advancedConfig；否则用编辑器当前值。
-    // 解析规则集中在 buildModel 一处（resolveEffects），避免散落判断。
-    let activePresetEffects = null;
-
     // 规范化 effects：补齐缺失字段，保证 buildModel 访问安全
     function normalizeEffects(ef) {
         const src = ef || {};
@@ -551,16 +548,12 @@
         };
     }
 
-    function resolveEffects() {
-        return normalizeEffects(activePresetEffects || advancedConfig);
-    }
-
     // ============================================================
     //  模型构造（与 A 站原生 getData 完全一致）
     // ============================================================
 
-    function buildModel(sub, cfg, durationMs) {
-        const text = (sub.text || '').trim().slice(0, 255);
+    function buildModel(sub, cfg, durationMs, effects) {
+        const text = Array.from((sub.text || '').trim()).slice(0, 255).join('');
         // 起始时间 = 字幕时间 + 全局时间偏移（ms，可为负，用于微调同步）
         const startTime = Math.max(0, Math.round(sub.time + timeOffset));
         // 运动耗时由相邻字幕间隔自动计算，durationMs 兜底
@@ -573,7 +566,7 @@
             stroke: cfg.stroke !== false,
             color: rgbToHex(cfg.color),
         };
-        const adv = resolveEffects();
+        const adv = normalizeEffects(effects || advancedConfig);
 
         // 简单投影（旧字段，向后兼容）：未在高级字段里配置投影时才启用
         if (cfg.shadow && !adv.shadow) {
@@ -649,14 +642,26 @@
         return getAllPresets().find((p) => p.id === activePresetId) || BUILTIN_PRESETS[0];
     }
 
+    // 激活预设是否自带 effects（高级字段）。UI 据此禁用高级编辑区。
+    function activePresetHasEffects() {
+        const preset = getActivePreset();
+        return !!(preset && preset.effects);
+    }
+    // 当前生效的 effects 值：激活预设带 effects 用预设的，否则回落编辑器高级字段 advancedConfig。
+    // 替代原先的全局缓存 activePresetEffects，避免「预览临时改全局再恢复」的污染。
+    function currentEffects() {
+        const preset = getActivePreset();
+        return (preset && preset.effects) ? preset.effects : advancedConfig;
+    }
+
     // 初始化预设：只合并「已主动保存」的微调 options（自定义预设不持久化，刷新后需重新导入）
     function initPresets() {
         getAllPresets().forEach(applySavedOptions);
     }
 
     // 用 config 生成 model，但用伪字幕覆盖时间与文本
-    function modelFrom(cfg, text, timeMs, durationMs) {
-        return buildModel({ time: timeMs, text: text }, cfg, durationMs);
+    function modelFrom(cfg, text, timeMs, durationMs, effects) {
+        return buildModel({ time: timeMs, text: text }, cfg, durationMs, effects);
     }
 
     // ============================================================
@@ -803,7 +808,8 @@
     // 跨句衔接（独立步骤）：统一给「底层 base 层」设置时间。
     // 若跨句分栏 + 有上一句，底层提前到上一句开始时间并延长覆盖；否则底层本句常驻。
     // 与「时序类型」无关——扫光/高亮产生底层后，任何时序都能正确跨句候场。
-    function applyBaseAdvance(layers, ctx) {
+    // （params 参数为钩子统一签名保留，本步骤不读取）
+    function applyBaseAdvance(layers, params, ctx) {
         let baseStart = ctx.sub.time;
         let baseDur = ctx.dur;
         if (ctx.advanceable && ctx.prevTime != null && ctx.prevTime < ctx.sub.time) {
@@ -1023,7 +1029,12 @@
                 pnum('step.time', '逐字步长(ms)', 0, 2000, 10, 0),
             ], apply(layers, params, ctx) {
                 const mainCount = layers.filter((l) => l.kind !== 'base').length;
-                const stepTime = (pv(params, 'step.time') != null) ? num(pv(params, 'step.time'), 0) : Math.max(120, ctx.dur / Math.max(1, mainCount));
+                // step.time 缺失 / null / ≤0 都视为「自动按 dur/字数 算」，
+                // 避免清空输入框被写回 0 后扫光被静默关掉
+                const raw = pv(params, 'step.time', null);
+                const stepTime = (raw == null || num(raw, 0) <= 0)
+                    ? Math.max(120, ctx.dur / Math.max(1, mainCount))
+                    : num(raw, 0);
                 return staggerMain(layers, ctx, stepTime, true);
             } },
             'declarative': { hidden: true, label: '声明式时序', desc: '逐字延迟，或高亮扫光', params: [
@@ -1049,26 +1060,40 @@
         'declarative': { split: 'declarative', layout: 'grid', color: 'declarative', timing: 'declarative', motion: 'none' },
     };
 
+    // 管道钩子：标准 5 阶段之间的跨句/后处理步骤。
+    // 默认注册「跨句分栏」（布局后）与「跨句衔接」（时序后）两步；
+    // 新增跨阶段处理只需向 PIPELINE_HOOKS 追加 { after, apply }，不必改 runPipeline 主体。
+    const PIPELINE_HOOKS = [
+        { after: 'layout', apply: applySeqOffset },
+        { after: 'timing', apply: applyBaseAdvance },
+    ];
+    function runHooks(after, data, params, ctx) {
+        for (const h of PIPELINE_HOOKS) {
+            if (h.after === after) data = h.apply(data, params, ctx);
+        }
+        return data;
+    }
+
     // 管道执行器：按组合依次跑 5 个阶段，产出 model[]
     // yOffset：给所有片段 posY 统一加一个偏移（双语 LRC 副语言下移用），0 表示不偏移
-    function runPipeline(sub, cfg, durationMs, comp, params, seq, prevTime, yOffset) {
+    function runPipeline(sub, cfg, durationMs, comp, params, seq, prevTime, yOffset, effects) {
         const ctx = { sub, cfg, dur: durationMs, seq, prevTime, text: (sub.text || '').trim(), advanceable: false };
         let frags = ENGINES.split[comp.split].apply(ctx, params);
         frags = ENGINES.layout[comp.layout].apply(frags, params, ctx);
-        frags = applySeqOffset(frags, params, ctx);   // 跨句分栏（seq 奇偶 → 位置偏移）
+        frags = runHooks('layout', frags, params, ctx);   // 跨句分栏等布局后钩子
         if (yOffset) {
             frags.forEach((f) => { if (f.posY != null) f.posY = clamp(f.posY + yOffset, 1, 99); });
         }
         let layers = ENGINES.color[comp.color].apply(frags, params, ctx);
         layers = ENGINES.timing[comp.timing].apply(layers, params, ctx);
-        layers = applyBaseAdvance(layers, ctx);   // 跨句衔接：底层提前候场（与时序类型无关）
+        layers = runHooks('timing', layers, params, ctx);   // 跨句衔接等时序后钩子
         layers = ENGINES.motion[comp.motion].apply(layers, params, ctx);
         return layers.map((l) => {
             const c = Object.assign({}, cfg);
             if (l.posX != null) c.posX = l.posX;
             if (l.posY != null) c.posY = l.posY;
             if (l.color != null) c.color = l.color;
-            return modelFrom(c, l.text, l.time, l.duration);
+            return modelFrom(c, l.text, l.time, l.duration, effects);
         });
     }
 
@@ -1084,13 +1109,13 @@
     }
 
     // 跑管道并做安全回退：展开为空或抛错时回退为单条原样 model
-    function safeRun(sub, cfg, durationMs, comp, options, seq, prevTime, yOffset) {
+    function safeRun(sub, cfg, durationMs, comp, options, seq, prevTime, yOffset, effects) {
         try {
-            const models = runPipeline(sub, cfg, durationMs, comp, options || {}, seq, prevTime, yOffset);
-            return models.length ? models : [buildModel(sub, cfg, durationMs)];
+            const models = runPipeline(sub, cfg, durationMs, comp, options || {}, seq, prevTime, yOffset, effects);
+            return models.length ? models : [buildModel(sub, cfg, durationMs, effects)];
         } catch (e) {
             log('预设展开失败，回退原样', e);
-            return [buildModel(sub, cfg, durationMs)];
+            return [buildModel(sub, cfg, durationMs, effects)];
         }
     }
 
@@ -1098,28 +1123,29 @@
     // seq 为该字幕在选中序列里的序号（从 1 起，供双排等跨句布局使用）
     // prevTime 为上一句的开始时间（ms），供双排 KTV 让下一句暗色层提前出现
     function expandSub(sub, cfg, durationMs, seq, prevTime) {
+        const effects = currentEffects();
         // 双语 LRC：根据 bilingualMode 先归一化文本
         if (sub && sub.main != null && sub.sub != null) {
             if (bilingualMode === 'main' || bilingualMode === 'sub') {
                 const text = bilingualMode === 'sub' ? sub.sub : sub.main;
                 sub = Object.assign({}, sub, { text, main: null, sub: null });
             } else { // auto：上下两行，主/副语言都走当前预设管线
-                return expandBilingual(sub, cfg, durationMs, seq, prevTime);
+                return expandBilingual(sub, cfg, durationMs, seq, prevTime, effects);
             }
         }
 
         const preset = getActivePreset();
         const comp = preset ? (preset.composition || COMPOSITIONS[preset.transform]) : null;
         if (!preset || !comp) {
-            return [buildModel(sub, cfg, durationMs)];
+            return [buildModel(sub, cfg, durationMs, effects)];
         }
-        return safeRun(sub, cfg, durationMs, comp, preset.options, seq, prevTime);
+        return safeRun(sub, cfg, durationMs, comp, preset.options, seq, prevTime, 0, effects);
     }
 
     // 双语 LRC（auto）：主语言在上、副语言在下，副语言整体下移 LANG_GAP 并着金色。
     // 有激活预设时，主/副语言各自走一遍当前预设管线（竖排/KTV/声明式等都对双语生效）；
     // 无预设（组合为空）时回退为简单上下两行。
-    function expandBilingual(sub, cfg, durationMs, seq, prevTime) {
+    function expandBilingual(sub, cfg, durationMs, seq, prevTime, effects) {
         const preset = getActivePreset();
         const comp = preset ? (preset.composition || COMPOSITIONS[preset.transform]) : null;
         if (!comp) {
@@ -1130,13 +1156,13 @@
             subCfg.posY = clamp(baseY + 5, 1, 99);
             subCfg.color = 0xffd700;
             return [
-                buildModel({ time: sub.time, text: sub.main }, mainCfg, durationMs),
-                buildModel({ time: sub.time, text: sub.sub }, subCfg, durationMs),
+                buildModel({ time: sub.time, text: sub.main }, mainCfg, durationMs, effects),
+                buildModel({ time: sub.time, text: sub.sub }, subCfg, durationMs, effects),
             ];
         }
         const LANG_GAP = 5;
-        const mainModels = safeRun({ time: sub.time, text: sub.main }, cfg, durationMs, comp, preset.options, seq, prevTime, 0);
-        const subModels = safeRun({ time: sub.time, text: sub.sub }, cfg, durationMs, comp, preset.options, seq, prevTime, LANG_GAP);
+        const mainModels = safeRun({ time: sub.time, text: sub.main }, cfg, durationMs, comp, preset.options, seq, prevTime, 0, effects);
+        const subModels = safeRun({ time: sub.time, text: sub.sub }, cfg, durationMs, comp, preset.options, seq, prevTime, LANG_GAP, effects);
         // 副语言整体着色为金色，与主语言区分
         subModels.forEach((m) => { m.wordStyle.color = rgbToHex(0xffd700); });
         return mainModels.concat(subModels);
@@ -1193,8 +1219,8 @@
                     try { j = JSON.parse(txt); } catch (e) { /* 保留 txt 供日志 */ }
                     resolve({ status: r.status, text: txt, json: j });
                 },
-                onerror: (e) => reject(new Error('网络错误：' + ((e && e.error) || JSON.stringify(e)))),
-                ontimeout: () => reject(new Error('超时')),
+                onerror: (e) => reject(new Error('网络错误（结果未知，可能已发送，重发前请先验证）：' + ((e && e.error) || JSON.stringify(e)))),
+                ontimeout: () => reject(new Error('超时（结果未知，可能已发送，重发前请先验证）')),
             });
         });
     }
@@ -1247,13 +1273,20 @@
         throw new Error(RESULT_MSG[code] || (j && j.error_msg) || ('result=' + code));
     }
 
-    // 发送一条字幕：按激活预设展开成多个 model，逐个发送
+    // 发送一条字幕：按激活预设展开成多个 model，逐个发送。
+    // 展开出的多条弹幕之间加 MODEL_SEND_INTERVAL 节流，避免一句 KTV 几十条请求背靠背触发限流；
+    // 每条发送前检查 cancelled，让取消能在一句内部的弹幕间及时生效。
+    // 返回 {sent, total}：中途取消时 sent < total（部分发送），由调用方标记未完成，避免整句被误判为已发完。
     async function sendDanmaku(sub, cfg, seq, prevTime) {
         const models = expandSub(sub, cfg, calcDurationMs(subs.indexOf(sub)), seq, prevTime);
-        for (const m of models) {
-            await sendModel(m);
+        let sent = 0;
+        for (let i = 0; i < models.length; i++) {
+            if (cancelled) break;
+            await sendModel(models[i]);
+            sent++;
+            if (i < models.length - 1 && !cancelled) await sleep(MODEL_SEND_INTERVAL);
         }
-        return true;
+        return { sent, total: models.length };
     }
 
     // ============================================================
@@ -1273,6 +1306,7 @@
         // 播放器每次只查约 20 秒窗口，窗口太大单段返回可能被截断导致漏数。
         // 因此复刻播放器逻辑：每 20 秒一段全片扫，累加去重。
         const durMs = getVideoDurationMs();
+        if (!durMs) { status('⚠️ 无法获取视频时长，无法验证', 'err'); return; }
         const SEG = 20 * 1000;   // 20 秒一段
         const seen = new Map();  // danmakuId -> 弹幕对象（去重）
         let segCount = 0;
@@ -1343,7 +1377,7 @@
                 }
             }
         }
-        return sec > 0 ? Math.floor(sec * 1000) : 60 * 60 * 1000;  // 兜底 1 小时
+        return sec > 0 ? Math.floor(sec * 1000) : 0;   // 拿不到时长返回 0，由调用方提示，而非兜底扫 1 小时
     }
 
     function getUid() {
@@ -1380,6 +1414,8 @@
     // 让它不再落在任何播放时间窗口内，避免残留/重复渲染。
     let previewRefs = [];
     let previewSeq = 0;
+    // 预览方式：默认走 Canvas 自绘（离线预览），可切回 A 站渲染器（在线预览）
+    let useOfflinePreview = true;
 
     function expirePreviews() {
         for (const m of previewRefs) {
@@ -1408,20 +1444,6 @@
     }
 
     async function previewSub(sub) {
-        const p = getPlayer();
-        log('👁 previewSub 开始：', sub && sub.text, '| player=' + !!p, '| loadDanmakuG=' + (p ? typeof p.loadDanmakuG : 'n/a'));
-        if (!p) { status('❌ 未检测到播放器', 'err'); return; }
-        if (typeof p.loadDanmakuG !== 'function') {
-            status('⚠️ 高级弹幕渲染器未就绪，请先点弹幕输入框内第三个按钮展开一次', 'err');
-            return;
-        }
-        if (!ensureRenderer(p)) {
-            status('⚠️ 高级弹幕渲染器初始化失败，请展开一次原生高级弹幕编辑器', 'err');
-            return;
-        }
-
-        expirePreviews();   // 让上一条预览弹幕过期，不再播放时重现
-
         const cfg = cfgFor(sub);
         const idx = subs.indexOf(sub);
         // 手动弹幕（带 duration 字段且不在列表里）直接用其时长
@@ -1432,7 +1454,30 @@
         const dur = Math.max(500, baseDur - (previewSeq % 3));
         // 按激活预设展开成多个 model（seq 从 1 起，保证与预览全部/发送的奇偶一致）
         const models = expandSub(sub, cfg, dur, 1);
-        log('👁 展开出 ' + models.length + ' 个 model，首条 startTime=' + (models[0] && models[0].startTime));
+        log('👁 previewSub：', sub && sub.text, '→ ' + models.length + ' 个 model，离线=' + useOfflinePreview);
+
+        // 离线预览：Canvas 自绘，无需渲染器 / 去重 hack，seek 到字幕前让 currentTime 落进窗口
+        if (useOfflinePreview) {
+            startOfflinePreview(models);
+            const p = getPlayer();
+            if (p) { seekTo(Math.max(0, models[0].startTime - 400)); playVideo(); }
+            status(`👁 预览：${sub.text}`, 'busy');
+            return;
+        }
+
+        // —— 在线预览（复用 A 站渲染器），保留原有时序 hack ——
+        stopOfflinePreview();   // 切到在线预览时清掉离线画布，避免双重画面
+        const p = getPlayer();
+        if (!p) { status('❌ 未检测到播放器', 'err'); return; }
+        if (typeof p.loadDanmakuG !== 'function') {
+            status('⚠️ 高级弹幕渲染器未就绪，请先点弹幕输入框内第三个按钮展开一次', 'err');
+            return;
+        }
+        if (!ensureRenderer(p)) {
+            status('⚠️ 高级弹幕渲染器初始化失败，请展开一次原生高级弹幕编辑器', 'err');
+            return;
+        }
+        expirePreviews();   // 让上一条预览弹幕过期，不再播放时重现
         models.forEach((m) => {
             m.id = 'cf-prev-' + (++previewSeq);
             // 关键：渲染器按「去 id 后的完整 JSON」做内容去重且永不清理，
@@ -1467,6 +1512,32 @@
 
     // 预览全部：把全部字幕一次性铺到视频上，从头过一遍
     function previewAll() {
+        if (!subs.length) { status('请先上传字幕文件', 'err'); return; }
+        const selected = subs.filter((s) => s.selected);
+        if (!selected.length) { status('没有选中的字幕，请先勾选', 'err'); return; }
+
+        const models = [];
+        selected.forEach((s, k) => {
+            const i = subs.indexOf(s);
+            const cfg = cfgFor(s);
+            // k = 选中序列里的序号（从 0 开始），双排 KTV 用它决定上下行
+            const prevTime = k > 0 ? selected[k - 1].time : null;
+            const expanded = expandSub(s, cfg, calcDurationMs(i), k + 1, prevTime);
+            expanded.forEach((m) => { models.push(m); });
+        });
+
+        // 离线预览：Canvas 自绘，seek 到首条之前留余量再 play
+        if (useOfflinePreview) {
+            startOfflinePreview(models);
+            const p = getPlayer();
+            if (p) { seekTo(Math.max(0, selected[0].time + timeOffset - 400)); playVideo(); }
+            previewPaused = false;
+            status(`▶ 预览全部：${selected.length} 条字幕 → ${models.length} 条弹幕`, 'busy');
+            return;
+        }
+
+        // —— 在线预览（复用 A 站渲染器）——
+        stopOfflinePreview();   // 切到在线预览时清掉离线画布，避免双重画面
         const p = getPlayer();
         if (!p) { status('❌ 未检测到播放器', 'err'); return; }
         if (typeof p.loadDanmakuG !== 'function') {
@@ -1477,25 +1548,12 @@
             status('⚠️ 高级弹幕渲染器初始化失败，请展开一次原生高级弹幕编辑器', 'err');
             return;
         }
-        if (!subs.length) { status('请先上传字幕文件', 'err'); return; }
-
         expirePreviews();
-        const selected = subs.filter((s) => s.selected);
-        if (!selected.length) { status('没有选中的字幕，请先勾选', 'err'); return; }
-        const models = [];
-        selected.forEach((s, k) => {
-            const i = subs.indexOf(s);
-            const cfg = cfgFor(s);
-            // k = 选中序列里的序号（从 0 开始），双排 KTV 用它决定上下行
-            const prevTime = k > 0 ? selected[k - 1].time : null;
-            const expanded = expandSub(s, cfg, calcDurationMs(i), k + 1, prevTime);
-            expanded.forEach((m) => {
-                m.id = 'cf-prevall-' + (++previewSeq) + '-' + i;
-                m.__seq = previewSeq;   // 绕过渲染器内容去重
-                m.user = String(getUid() || '');   // 通过「只看自己」过滤器（同 previewSub）
-                previewRefs.push(m);
-                models.push(m);
-            });
+        models.forEach((m, idx) => {
+            m.id = 'cf-prevall-' + (++previewSeq) + '-' + idx;
+            m.__seq = previewSeq;   // 绕过渲染器内容去重
+            m.user = String(getUid() || '');   // 通过「只看自己」过滤器（同 previewSub）
+            previewRefs.push(m);
         });
 
         // 时序修复（同 previewSub）：先暂停 → seek 到首条之前留余量 → 注入全部 → play。
@@ -1520,6 +1578,29 @@
     // 供开发面板预览「两句同时出现」的跨句效果（如 KTV 双排、竖排 KTV）使用。
     // subList: [{ time, text, duration? }]，每句用 seq（k+1）与 prevTime（前一句时间）衔接。
     function previewMulti(subList, durMs) {
+        if (!subList || !subList.length) { status('没有可预览的内容', 'err'); return Promise.resolve(); }
+
+        const models = [];
+        subList.forEach((s, k) => {
+            const cfg = cfgFor(s);
+            const prevTime = k > 0 ? subList[k - 1].time : null;
+            const dur = (s.duration != null) ? s.duration : durMs;
+            const expanded = expandSub(s, cfg, dur, k + 1, prevTime);
+            expanded.forEach((m) => { models.push(m); });
+        });
+        if (!models.length) { status('预览展开为空', 'err'); return Promise.resolve(); }
+
+        // 离线预览：Canvas 自绘
+        if (useOfflinePreview) {
+            startOfflinePreview(models);
+            const p = getPlayer();
+            if (p) { seekTo(Math.max(0, subList[0].time + timeOffset - 400)); playVideo(); }
+            status(`▶ 预览：${subList.length} 句 → ${models.length} 条弹幕`, 'busy');
+            return Promise.resolve();
+        }
+
+        // —— 在线预览（复用 A 站渲染器）——
+        stopOfflinePreview();   // 切到在线预览时清掉离线画布，避免双重画面
         const p = getPlayer();
         if (!p || typeof p.loadDanmakuG !== 'function') {
             status('⚠️ 高级弹幕渲染器未就绪，请先点弹幕输入框内第三个按钮展开一次', 'err');
@@ -1529,24 +1610,13 @@
             status('⚠️ 高级弹幕渲染器初始化失败，请展开一次原生高级弹幕编辑器', 'err');
             return Promise.resolve();
         }
-        if (!subList || !subList.length) { status('没有可预览的内容', 'err'); return Promise.resolve(); }
-
         expirePreviews();
-        const models = [];
-        subList.forEach((s, k) => {
-            const cfg = cfgFor(s);
-            const prevTime = k > 0 ? subList[k - 1].time : null;
-            const dur = (s.duration != null) ? s.duration : durMs;
-            const expanded = expandSub(s, cfg, dur, k + 1, prevTime);
-            expanded.forEach((m) => {
-                m.id = 'cf-prevm-' + (++previewSeq) + '-' + k;
-                m.__seq = previewSeq;
-                m.user = String(getUid() || '');
-                previewRefs.push(m);
-                models.push(m);
-            });
+        models.forEach((m, idx) => {
+            m.id = 'cf-prevm-' + (++previewSeq) + '-' + idx;
+            m.__seq = previewSeq;
+            m.user = String(getUid() || '');
+            previewRefs.push(m);
         });
-        if (!models.length) { status('预览展开为空', 'err'); return Promise.resolve(); }
 
         pauseVideo();
         seekTo(Math.max(0, subList[0].time + timeOffset - 400));
@@ -1565,6 +1635,227 @@
         });
     }
 
+    // ============================================================
+    //  离线预览（Canvas 自绘，不依赖 A 站渲染器）
+    // ============================================================
+
+    // 缓动进度：timingFunction → 归一化进度。
+    // 支持 CSS 关键字（linear/ease-*）与 cubic-bezier(x1,y1,x2,y2) 字符串；
+    // 未知值一律回落 linear。
+    function cubicBezierXY(t, p1, p2) {
+        const mt = 1 - t;
+        return 3 * mt * mt * t * p1 + 3 * mt * t * t * p2 + t * t * t;
+    }
+    function cubicBezierDX(t, p1, p2) {
+        const mt = 1 - t;
+        return 3 * mt * mt * p1 + 6 * mt * t * (p2 - p1) + 3 * t * t * (1 - p2);
+    }
+    function easeProgress(t, fn) {
+        if (fn && fn.indexOf('cubic-bezier') === 0) {
+            const m = /^cubic-bezier\(\s*([\d.+-]+)\s*,\s*([\d.+-]+)\s*,\s*([\d.+-]+)\s*,\s*([\d.+-]+)\s*\)$/.exec(fn);
+            if (!m) return t;
+            const x1 = parseFloat(m[1]), y1 = parseFloat(m[2]), x2 = parseFloat(m[3]), y2 = parseFloat(m[4]);
+            // 牛顿迭代求 x(u) = t 的参数 u（x1/x2∈[0,1] 时 x(u) 单调），再回代求 y(u)。
+            // 平缓区曲线（如 (1,0,0,1) 在 u=0.5 处导数为 0）会让牛顿一步跨出 [0,1] 而发散，
+            // 出界/停滞即放弃牛顿，改用二分（单调性保证收敛）。
+            let u = t, ok = false;
+            for (let i = 0; i < 8; i++) {
+                const dx = cubicBezierXY(u, x1, x2) - t;
+                if (Math.abs(dx) < 1e-6) { ok = true; break; }
+                const d = cubicBezierDX(u, x1, x2);
+                if (Math.abs(d) < 1e-6) break;
+                const un = u - dx / d;
+                if (un < 0 || un > 1) break;
+                u = un;
+            }
+            if (!ok) {
+                let lo = 0, hi = 1;
+                for (let i = 0; i < 32; i++) {
+                    u = (lo + hi) / 2;
+                    if (cubicBezierXY(u, x1, x2) < t) lo = u; else hi = u;
+                }
+            }
+            return cubicBezierXY(u, y1, y2);
+        }
+        switch (fn) {
+            case 'linear': return t;
+            case 'ease-in': return t * t;
+            case 'ease-out': return t * (2 - t);
+            case 'ease-in-out': return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+            default: return t;
+        }
+    }
+
+    function lerp(a, b, t) { return a + (b - a) * t; }
+
+    // 把 model 在 elapsedMs（相对 startTime）处的绘制状态算出来。
+    // 多段 animationFrames 按 moveTime 累加定位当前段，段内按 timingFunction 插值。
+    // 返回 { x, y, scaleX, scaleY, rotateX, rotateY, rotateZ }；不可见 / 越界返回 null。
+    function interpolateModel(model, elapsedMs) {
+        if (!model || elapsedMs < 0) return null;
+        const frames = model.animationFrames || [];
+        if (!frames.length) return null;
+        let acc = 0;
+        for (const f of frames) {
+            const mt = f.moveTime || 0;
+            if (elapsedMs < acc + mt || mt <= 0) {
+                const p = mt > 0 ? Math.max(0, Math.min(1, (elapsedMs - acc) / mt)) : 1;
+                const e = easeProgress(p, f.timingFunction || 'linear');
+                return {
+                    x: lerp(f.from.pos.x, f.to.pos.x, e),
+                    y: lerp(f.from.pos.y, f.to.pos.y, e),
+                    scaleX: lerp(f.from.scale.x, f.to.scale.x, e),
+                    scaleY: lerp(f.from.scale.y, f.to.scale.y, e),
+                    rotateX: lerp(f.from.rotate.x, f.to.rotate.x, e),
+                    rotateY: lerp(f.from.rotate.y, f.to.rotate.y, e),
+                    rotateZ: lerp(f.from.rotate.z, f.to.rotate.z, e),
+                };
+            }
+            acc += mt;
+        }
+        return null;
+    }
+
+    // ============================================================
+    //  Canvas 渲染器：把 model[] 自绘到覆盖在视频上的画布
+    //  （不依赖 A 站渲染器；时钟跟随播放器 currentTime）
+    // ============================================================
+
+    let offlineCanvas = null;
+    let offlineCtx = null;
+    let offlineVideo = null;
+    let offlineModels = [];     // 当前预览的 model 列表
+    let offlineRaf = null;
+    let offlineDpr = 1;         // 当前 devicePixelRatio（retina 清晰度）
+    let offlineCssW = 0;        // 画布 CSS 尺寸（逻辑像素）
+    let offlineCssH = 0;
+
+    // 挂载画布到视频画面容器（container-video），并精确对齐 <video> 元素的实际画面区域。
+    // A 站视频画面 = player.$video；其父级 .container-video 是 relative 定位上下文。
+    function ensureOfflineCanvas() {
+        if (offlineCanvas && offlineCanvas.parentNode) return offlineCanvas;
+        const p = getPlayer();
+        const video = p && p.$video;
+        const host = (video && video.parentNode)
+            || document.querySelector('.container-video')
+            || document.body;
+        offlineVideo = video || null;
+        offlineCanvas = document.createElement('canvas');
+        offlineCanvas.id = 'cf-offline-preview';
+        offlineCanvas.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;z-index:1000;';
+        offlineCtx = offlineCanvas.getContext('2d');
+        host.appendChild(offlineCanvas);
+        return offlineCanvas;
+    }
+
+    // 对齐：让 canvas 精确覆盖 <video> 画面（而非整个 container-video，后者高度含黑边，
+    // 用 video 画面尺寸才与 A 站 pos.x/pos.y 百分比坐标系一致）。
+    // 像素尺寸乘 devicePixelRatio，避免 retina 屏发虚。
+    function alignOfflineCanvas() {
+        const c = offlineCanvas;
+        if (!c || !c.parentNode) return;
+        let left = 0, top = 0, w = 0, h = 0;
+        if (offlineVideo) {
+            const hr = c.parentNode.getBoundingClientRect();
+            const vr = offlineVideo.getBoundingClientRect();
+            left = vr.left - hr.left;
+            top = vr.top - hr.top;
+            w = vr.width;
+            h = vr.height;
+        } else {
+            const r = c.parentNode.getBoundingClientRect();
+            w = r.width; h = r.height;
+        }
+        w = Math.max(1, w); h = Math.max(1, h);
+        const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+        c.style.left = left + 'px';
+        c.style.top = top + 'px';
+        c.style.width = w + 'px';
+        c.style.height = h + 'px';
+        const pw = Math.round(w * dpr), ph = Math.round(h * dpr);
+        if (c.width !== pw) c.width = pw;
+        if (c.height !== ph) c.height = ph;
+        offlineDpr = dpr;
+        offlineCssW = w;
+        offlineCssH = h;
+    }
+
+    function drawModel(ctx, model, frame, cw, ch) {
+        const ws = model.wordStyle || {};
+        const text = model.content || '';
+        const size = ws.size || 24;
+        const family = ws.font || 'SimHei';
+        ctx.save();
+        ctx.font = (ws.bold ? 'bold ' : '') + size + 'px ' + family;
+        // fillText 不渲染 \n，多行字幕（SRT/ASS 的 {\N}）需按行拆画；行高对齐 A 站 line-height = fontSize
+        const lines = text.split('\n');
+        const lineHeight = size;
+        const blockH = lines.length * lineHeight;
+        const x = frame.x / 100 * cw;
+        const y = frame.y / 100 * ch;
+        const anchor = model.anchor == null ? 4 : model.anchor;
+        const col = anchor % 3, row = Math.floor(anchor / 3);
+        // 锚点对齐交给 canvas 原生 textAlign/textBaseline（与 A 站 transform-origin 九宫格一致）
+        ctx.translate(x, y);
+        ctx.scale(frame.scaleX, frame.scaleY);
+        ctx.rotate(frame.rotateZ * Math.PI / 180);
+        ctx.textAlign = col === 0 ? 'left' : col === 1 ? 'center' : 'right';
+        ctx.textBaseline = 'middle';
+        // 文本块垂直对齐：row 0=顶 1=中 2=底
+        const yStart = row === 0 ? 0 : row === 1 ? -blockH / 2 : -blockH;
+        if (ws.stroke !== false) {
+            ctx.lineWidth = Math.max(1, size / 12);
+            ctx.strokeStyle = '#000000';
+        }
+        for (let i = 0; i < lines.length; i++) {
+            if (ws.stroke !== false) ctx.strokeText(lines[i], 0, yStart + (i + 0.5) * lineHeight);
+        }
+        if (ws.shadow) {
+            ctx.shadowColor = ws.shadow.color || '#000000';
+            ctx.shadowBlur = ws.shadow.blur || 0;
+            ctx.shadowOffsetX = ws.shadow.x || 0;
+            ctx.shadowOffsetY = ws.shadow.y || 0;
+        }
+        ctx.fillStyle = ws.color || '#ffffff';
+        for (let i = 0; i < lines.length; i++) {
+            ctx.fillText(lines[i], 0, yStart + (i + 0.5) * lineHeight);
+        }
+        ctx.restore();
+    }
+
+    function renderOfflineFrame() {
+        const c = offlineCanvas;
+        if (!c || !offlineCtx) return;
+        const p = getPlayer();
+        // 时间源优先 <video>.currentTime（原生、随视频帧实时更新），player.currentTime 可能有缓存滞后
+        const src = (p && p.$video && typeof p.$video.currentTime === 'number') ? p.$video : p;
+        const now = (src && typeof src.currentTime === 'number') ? src.currentTime * 1000 : 0;
+        alignOfflineCanvas();
+        const cw = offlineCssW || c.width, ch = offlineCssH || c.height;
+        offlineCtx.setTransform(offlineDpr || 1, 0, 0, offlineDpr || 1, 0, 0);
+        offlineCtx.clearRect(0, 0, cw, ch);
+        for (const m of offlineModels) {
+            const frame = interpolateModel(m, now - m.startTime);
+            if (frame) drawModel(offlineCtx, m, frame, cw, ch);
+        }
+    }
+
+    function startOfflinePreview(models) {
+        offlineModels = models || [];
+        ensureOfflineCanvas();
+        if (offlineRaf) cancelAnimationFrame(offlineRaf);
+        const loop = () => { renderOfflineFrame(); offlineRaf = requestAnimationFrame(loop); };
+        offlineRaf = requestAnimationFrame(loop);
+    }
+
+    function stopOfflinePreview() {
+        if (offlineRaf) { cancelAnimationFrame(offlineRaf); offlineRaf = null; }
+        offlineModels = [];
+        if (offlineCtx && offlineCanvas) {
+            offlineCtx.setTransform(1, 0, 0, 1, 0, 0);
+            offlineCtx.clearRect(0, 0, offlineCanvas.width, offlineCanvas.height);
+        }
+    }
     // ============================================================
     //  UI（仿原生面板壳）
     // ============================================================
@@ -1699,6 +1990,7 @@
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-all">▶ 预览全部</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-pause">⏸ 暂停预览</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-reset">↺ 重置</button>
+                <label class="cf-chk" title="勾选=自绘 Canvas 预览（不依赖 A 站渲染器）；取消=复用 A 站原生渲染器"><input type="checkbox" id="cf-offline-preview"${useOfflinePreview ? ' checked' : ''}> 离线预览</label>
             </div>
             <div class="cf-actions-row">
                 <button type="button" class="cf-btn cf-btn-p" id="cf-send">▶ 发送全部</button>
@@ -1878,9 +2170,20 @@
         if (!targets.length) { status('没有可发送的字幕（未选中或已全部发送）', 'err'); return; }
         const v = getVideoInfo();
         if (!v || !v.videoId) { status('❌ 未获取到视频信息，请确认已登录且在视频页', 'err'); return; }
-        if (!confirm(`发送 ${targets.length} 条高级弹幕？\n发送后无法撤回。`)) { status('已取消'); return; }
+        // 预展开计数：让用户对真实请求量有预期（一句字幕经预设可展开成几十条弹幕）
+        let totalModels = 0;
+        for (let k = 0; k < targets.length; k++) {
+            const s = targets[k];
+            try {
+                const cfg = cfgFor(s);
+                const prevTime = k > 0 ? targets[k - 1].time : null;
+                totalModels += expandSub(s, cfg, calcDurationMs(subs.indexOf(s)), k + 1, prevTime).length;
+            } catch (e) { totalModels += 1; }
+        }
+        if (!confirm(`发送 ${targets.length} 条字幕（展开 ${totalModels} 条弹幕）？\n发送后无法撤回。`)) { status('已取消'); return; }
 
         sending = true; cancelled = false; setBtns(true);
+        lastSentIds = [];   // 清空上次批次的 danmakuId，验证只针对本次发送
 
         for (let k = 0; k < targets.length; k++) {
             if (cancelled) break;
@@ -1890,9 +2193,18 @@
             try {
                 const cfg = cfgFor(s);
                 const prevTime = k > 0 ? targets[k - 1].time : null;
-                await sendDanmaku(s, cfg, k + 1, prevTime);   // 序号从 1 起，供双排 KTV 决定上下行
-                s.st = 'ok';
-                status(`✓ ${fmt(s.time)} ${s.text}`, 'ok');
+                const r = await sendDanmaku(s, cfg, k + 1, prevTime);   // 序号从 1 起，供双排 KTV 决定上下行
+                if (r.sent < r.total) {
+                    // 中途取消导致部分发送：标 err 让本句留在重发池，且如实告知重发会重复已发部分
+                    s.st = 'err';
+                    const msg = r.sent
+                        ? `已取消：本句仅发送 ${r.sent}/${r.total} 条，重发会重复已发部分`
+                        : '已取消：本句未发送';
+                    status(`✗ ${fmt(s.time)} ${msg}`, 'err');
+                } else {
+                    s.st = 'ok';
+                    status(`✓ ${fmt(s.time)} ${s.text}`, 'ok');
+                }
             } catch (e) {
                 s.st = 'err';
                 status(`✗ ${fmt(s.time)} ${e.message}`, 'err');
@@ -1910,6 +2222,7 @@
     function resetAll() {
         if (sending) { cancelled = true; }
         subs.forEach((s) => (s.st = ''));
+        stopOfflinePreview();   // 清除离线预览画布
         renderList(); setBtns(false);
         status('↺ 已重置');
     }
@@ -1918,6 +2231,7 @@
     function removeSubs() {
         if (sending) { cancelled = true; sending = false; }
         expirePreviews();
+        stopOfflinePreview();   // 清除离线预览画布
         subs = [];
         renderList(); setBtns(false);
         const uz = $('#cf-drop');
@@ -2269,7 +2583,7 @@
     // （对齐 A 站原生 isShadow/isShine/isBlur 语义）
     function syncAdvEnableUI() {
         // 激活预设带 effects 时，高级编辑整区由预设接管（syncEditorOwnedUI 已禁用），此处不覆盖
-        if (activePresetEffects) return;
+        if (activePresetHasEffects()) return;
         const shOn = (($('#cf-adv-sh-on') || {}).checked) === true;
         const snOn = (($('#cf-adv-sn-on') || {}).checked) === true;
         const blurOn = (($('#cf-adv-blur-on') || {}).checked) === true;
@@ -2583,7 +2897,7 @@
         if (tip) tip.style.display = (owned('posX') || owned('posY')) ? '' : 'none';
 
         // 高级编辑区：激活预设带 effects 时，高级字段由预设决定，整区禁用并提示
-        const hasEffects = !!activePresetEffects;
+        const hasEffects = activePresetHasEffects();
         const advBody = $('#cf-adv-body');
         const advTip = $('#cf-adv-owner-tip');
         if (advBody) {
@@ -2621,7 +2935,6 @@
         preset.options = Object.assign({}, orig);
         // effects 同样还原到导入时的原值
         if (preset._origEffects) preset.effects = JSON.parse(JSON.stringify(preset._origEffects));
-        syncActiveEffects();
         renderPresetParams();
         status(`↩ 已恢复「${preset.name}」默认参数`, 'ok');
     }
@@ -2732,9 +3045,8 @@
         activePresetId = sel ? sel.value : 'none';
         // 激活预设带 effects 时，批量发送复用这些高级字段
         const preset = getActivePreset();
-        activePresetEffects = (preset && preset.effects) ? preset.effects : null;
         updatePresetUI();
-        status(`已切换预设：${(preset || {}).name || '无'}${activePresetEffects ? '（含高级字段）' : ''}`, 'ok');
+        status(`已切换预设：${(preset || {}).name || '无'}${activePresetHasEffects() ? '（含高级字段）' : ''}`, 'ok');
     }
 
     function importPreset() { $('#cf-preset-file').click(); }
@@ -2855,7 +3167,6 @@
         try { localStorage.removeItem('cf_sub_presetOpt_' + p.id); } catch (e) {}
         activePresetId = 'none';
         refreshPresetSelect();
-        syncActiveEffects();
         status(`🗑 已删除「${p.name}」`, 'ok');
     }
 
@@ -2940,20 +3251,12 @@
                 }
                 if (warns.length) status('⚠️ 导入提醒：' + warns.join('；'), 'err');
                 refreshPresetSelect();
-                // 导入后若当前激活预设带 effects，同步 activePresetEffects
-                syncActiveEffects();
                 status(`✅ 已导入 ${n} 个预设（仅本次会话，刷新后需重新导入）`, 'ok');
             } catch (e) {
                 status('预设 JSON 解析失败: ' + e.message, 'err');
             }
         };
         r.readAsText(file, 'utf-8');
-    }
-
-    // 根据当前激活预设同步 activePresetEffects（导入/删除后调用）
-    function syncActiveEffects() {
-        const preset = getActivePreset();
-        activePresetEffects = (preset && preset.effects) ? preset.effects : null;
     }
 
     // ============================================================
@@ -3184,13 +3487,11 @@
         customPresets.push({ id: tempId, name: '预览', desc: '', transform: 'none', composition: draft.composition, options: draft.options, params: [] });
         const oldId = activePresetId;
         activePresetId = tempId;
-        syncActiveEffects();
         syncEditorOwnedUI();
         previewMulti(subList, GAP).then(() => {
             activePresetId = oldId;
             const i = customPresets.findIndex((p) => p.id === tempId);
             if (i >= 0) customPresets.splice(i, 1);
-            syncActiveEffects();
             syncEditorOwnedUI();
         });
     }
@@ -3209,7 +3510,6 @@
         };
         customPresets.push(preset);
         activePresetId = preset.id;
-        syncActiveEffects();
         refreshPresetSelect();
         status(`💾 已保存新预设「${preset.name}」，可像普通预设一样使用`, 'ok');
         closeDevPanel(mask);
@@ -3252,6 +3552,11 @@
         $('#cf-verify').addEventListener('click', verifySent);
         $('#cf-reset').addEventListener('click', resetAll);
         $('#cf-preview-all').addEventListener('click', previewAll);
+        $('#cf-offline-preview').addEventListener('change', (e) => {
+            useOfflinePreview = e.target.checked;
+            if (!useOfflinePreview) stopOfflinePreview();   // 切回在线预览时停掉离线画布，避免双重画面
+            status(`预览方式：${useOfflinePreview ? '离线 Canvas 自绘' : '在线 A 站渲染器'}`, 'ok');
+        });
         $('#cf-preview-pause').addEventListener('click', () => {
             const p = getPlayer();
             if (!p) return;
@@ -3621,7 +3926,6 @@
             ['绑定事件', bindEvents],
             ['建立入口', setupEntry],
         ];
-        syncActiveEffects();   // 初始化后同步 effects（激活预设若带 effects 则应用）
         for (const [name, fn] of steps) {
             try {
                 fn();

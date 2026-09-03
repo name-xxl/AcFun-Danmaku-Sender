@@ -7,7 +7,7 @@ const vm = require('vm');
 const ROOT = path.join(__dirname, '..');
 const FILES = [
     '00-header.js', '10-constants.js', '20-utils.js', '30-parser.js', '40-core.js',
-    '50-engine.js', '60-network.js', '70-preview.js', '80-ui.js', '85-danmaku.js',
+    '50-engine.js', '60-network.js', '70-preview.js', '71-canvas-preview.js', '80-ui.js', '85-danmaku.js',
     '90-preset-ui.js', '95-events.js', '99-main.js',
 ];
 
@@ -87,7 +87,160 @@ const TEST = `
     // 9) 署名兜底：无 cookie 环境下 getAcfunAuthor 不抛错、返回字符串（真实昵称+uid 靠浏览器验证）
     assert(typeof getAcfunAuthor() === 'string', 'getAcfunAuthor 应返回字符串');
 
-    console.log('冒烟测试完成：全部通过');
+    // 10) parseColor：尾随 & 是 libass 合法写法，不应静默变白
+    assert(parseColor('&H000000FF') === 0xff0000, 'parseColor 红: ' + parseColor('&H000000FF'));
+    assert(parseColor('&H000000FF&') === 0xff0000, 'parseColor 尾随& 应仍为红: ' + parseColor('&H000000FF&'));
+    assert(parseColor('&H00FF00&') === 0x00ff00, 'parseColor 尾随& 绿');
+    assert(parseColor('&HZZZZZZ') === 0xffffff, 'parseColor 非法回落白');
+    assert(parseColor('') === 0xffffff && parseColor(null) === 0xffffff, 'parseColor 空/null 回落白');
+
+    // 11) parseSub：SRT 多行保留、ASS 多行 \N 保留全部行、LRC 双语
+    const NL = String.fromCharCode(10);
+    const BS = String.fromCharCode(92);
+    const srt = ['1', '00:00:01,000 --> 00:00:03,000', '第一行', '第二行'].join(NL);
+    const sr = parseSub(srt, 'a.srt');
+    assert(sr.length === 1 && sr[0].text === '第一行' + NL + '第二行', 'SRT 多行应保留');
+
+    const ass = ['[Events]',
+        'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+        'Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,' + '第一行' + BS + 'N' + '第二行'
+    ].join(NL);
+    const ar = parseSub(ass, 'a.ass');
+    assert(ar.length === 1 && ar[0].text === '第一行' + NL + '第二行', 'ASS 多行 \\N 应保留全部行: ' + JSON.stringify(ar[0] && ar[0].text));
+
+    const lr = parseSub('[00:01.00]中文 / English', 'a.lrc');
+    assert(lr.length === 1 && lr[0].main === '中文' && lr[0].sub === 'English', 'LRC 双语拆分');
+
+    // 12) expandSub：KTV 20 字展开 40 条（底层+主层）
+    const savedPreset = activePresetId;
+    activePresetId = 'karaoke';
+    const ksub = { time: 1000, text: '一二三四五六七八九十一二三四五六七八九十' };
+    const kcfg = Object.assign({}, currentStyleConfig);
+    const kmodels = expandSub(ksub, kcfg, 3000, 1, null);
+    assert(kmodels.length === 40, 'KTV 20 字应展开 40 条，实际 ' + kmodels.length);
+    activePresetId = savedPreset;
+
+    // 13) calcDurationMs：endTime 优先、相邻反推、末尾默认
+    subs = [
+        { time: 0, endTime: 2000, text: 'a' },
+        { time: 3000, text: 'b' },
+        { time: 4000, text: 'c' },
+    ];
+    assert(calcDurationMs(0) === 2000, 'calcDurationMs endTime 优先');
+    assert(calcDurationMs(1) === 1000, 'calcDurationMs 相邻反推');
+    assert(calcDurationMs(2) === DEFAULT_DURATION, 'calcDurationMs 末尾默认');
+    subs = [];
+
+    // 14) interpolateModel：线性/缓动/多段插值
+    const frm = (fx, fy, tx, ty, fn, mt) => ({ from: { pos: { x: fx, y: fy, z: 1 }, scale: { x: 1, y: 1, z: 1 }, rotate: { x: 0, y: 0, z: 0 } }, to: { pos: { x: tx, y: ty, z: 1 }, scale: { x: 2, y: 2, z: 1 }, rotate: { x: 0, y: 0, z: 90 } }, timingFunction: fn, moveTime: mt });
+    const im = interpolateModel({ animationFrames: [frm(0, 0, 100, 50, 'linear', 1000)] }, 500);
+    assert(im.x === 50 && im.y === 25 && im.scaleX === 1.5 && im.rotateZ === 45, '线性插值中点: ' + JSON.stringify(im));
+    assert(interpolateModel({ animationFrames: [frm(0, 0, 100, 0, 'linear', 1000)] }, 0).x === 0, '起点');
+    assert(interpolateModel({ animationFrames: [frm(0, 0, 100, 0, 'linear', 1000)] }, 1000) === null, '终点后不可见');
+    assert(interpolateModel({ animationFrames: [frm(0, 0, 100, 0, 'linear', 1000)] }, -1) === null, '负时间不可见');
+    const imEase = interpolateModel({ animationFrames: [frm(0, 0, 100, 0, 'ease-in', 1000)] }, 500);
+    assert(imEase.x === 25, 'ease-in 0.5→0.25: ' + imEase.x);
+    const imMulti = interpolateModel({ animationFrames: [frm(0, 0, 50, 0, 'linear', 1000), frm(50, 0, 100, 0, 'linear', 1000)] }, 1500);
+    assert(imMulti.x === 75, '多段第二段插值: ' + imMulti.x);
+
+    // 14.5) easeProgress cubic-bezier：TIMING_FUNCS 里 24 个 cubic-bezier 字符串需正确求解
+    assert(easeProgress(0.5, 'cubic-bezier(0.5,0,0.5,1)') === 0.5, 'cubic-bezier 中点应为 0.5: ' + easeProgress(0.5, 'cubic-bezier(0.5,0,0.5,1)'));
+    assert(easeProgress(0, 'cubic-bezier(0.6,0.04,0.98,0.335)') === 0, 'cubic-bezier 起点 0');
+    assert(easeProgress(1, 'cubic-bezier(0.6,0.04,0.98,0.335)') === 1, 'cubic-bezier 终点 1');
+    assert(easeProgress(0.5, 'cubic-bezier(0.55,0.085,0.68,0.53)') < 0.5, '二次缓入中点应 < 0.5');
+    const backEase = easeProgress(0.5, 'cubic-bezier(0.175,0.885,0.32,1.275)');
+    assert(typeof backEase === 'number' && !isNaN(backEase), '回退缓动应返回数值');
+
+    // 14.55) bezier 平缓区回归：cubic-bezier(1,0,0,1) 导数在 u=0.5 处为 0，牛顿一步出界发散，需二分兜底
+    // 对独立二分参考逐点对比（含 t=0.49/0.51 两个平缓区触发点）
+    const refSolve = (t, x1, x2) => {
+        let lo = 0, hi = 1;
+        for (let i = 0; i < 60; i++) {
+            const mid = (lo + hi) / 2;
+            if (cubicBezierXY(mid, x1, x2) < t) lo = mid; else hi = mid;
+        }
+        return (lo + hi) / 2;
+    };
+    // 容差 1e-4：牛顿收敛判据是 x 域 1e-6，映射到 y 域可达 ~3e-6；
+    // 平坦曲线 (1,0,0,1) 在 u=0.5 处三重平坦，会把 t 的浮点噪声放大到同量级。
+    // 回归目标是挡住修复前 ~0.3 级的发散，1e-4 仍有 3000 倍余量。
+    for (const t of [0.2, 0.49, 0.5, 0.51, 0.8]) {
+        const expect = cubicBezierXY(refSolve(t, 1, 0), 0, 1);
+        const got = easeProgress(t, 'cubic-bezier(1,0,0,1)');
+        assert(Math.abs(got - expect) < 1e-4, '14.55 平缓区 t=' + t + ' 应精确: got=' + got + ' expect=' + expect);
+    }
+    // 全部 TIMING_FUNCS 曲线 vs 独立二分参考的精度扫描
+    const cbFns = [];
+    const collectCb = (o) => { for (const k in o) { const v = o[k]; if (typeof v === 'string' && v.indexOf('cubic-bezier') === 0) cbFns.push(v); else if (v && typeof v === 'object') collectCb(v); } };
+    collectCb(TIMING_FUNCS);
+    for (const fn of cbFns) {
+        const inner = fn.slice(fn.indexOf('(') + 1, fn.lastIndexOf(')'));
+        const nums = inner.split(',').map(Number);
+        for (let t = 0.05; t <= 0.95; t += 0.05) {
+            const expect = cubicBezierXY(refSolve(t, nums[0], nums[2]), nums[1], nums[3]);
+            const got = easeProgress(t, fn);
+            assert(Math.abs(got - expect) < 1e-4, '14.55 ' + fn + ' t=' + t.toFixed(2) + ' 偏差过大: got=' + got + ' expect=' + expect);
+        }
+    }
+
+    // 14.6) PIPELINE_HOOKS：默认注册跨句分栏（layout 后）+ 跨句衔接（timing 后）
+    assert(PIPELINE_HOOKS.length === 2, '默认应注册 2 个钩子，实际 ' + PIPELINE_HOOKS.length);
+    assert(PIPELINE_HOOKS.some((h) => h.after === 'layout' && h.apply === applySeqOffset), '应注册 layout 后跨句分栏钩子');
+    assert(PIPELINE_HOOKS.some((h) => h.after === 'timing' && h.apply === applyBaseAdvance), '应注册 timing 后跨句衔接钩子');
+
+    // 14.7) buildModel 显式收 effects：传 effects 生效，不传回落 advancedConfig
+    const mEff = buildModel({ time: 1000, text: '测试' }, currentStyleConfig, 3000, { zIndex: 99, rotate: { x: 10, y: 20, z: 30 } });
+    assert(mEff.zIndex === 99 && mEff.rotate.z === 30, 'buildModel 应使用显式传入的 effects');
+    const mDef = buildModel({ time: 1000, text: '测试' }, currentStyleConfig, 3000, null);
+    assert(mDef.zIndex === DEFAULT_ZINDEX, 'buildModel 无 effects 时回落 advancedConfig 默认层级');
+
+    // 15) sendDanmaku 取消路径：中途取消返回部分发送（sent<total），不再误报整句完成
+    (async () => {
+        try {
+            const origSendModel = sendModel;
+            const origExpandSub = expandSub;
+            const savedSubs = subs;
+            const fakeModels = [{ content: 'a' }, { content: 'b' }, { content: 'c' }, { content: 'd' }, { content: 'e' }];
+            expandSub = function () { return fakeModels.slice(); };
+            subs = [{ time: 1000, text: '甲' }];
+
+            // 15a) 第 3 条发送后取消：应返回 {sent:3, total:5}
+            let cancelAt = 3, calls = 0;
+            sendModel = async function () { calls++; if (cancelAt && calls >= cancelAt) cancelled = true; return true; };
+            cancelled = false;
+            const r1 = await sendDanmaku(subs[0], {}, 1, null);
+            assert(r1 && r1.sent === 3 && r1.total === 5, '15a 中途取消应返回 {sent:3,total:5}，实际 ' + JSON.stringify(r1));
+
+            // 15b) 不取消：全部发送
+            cancelAt = 0; calls = 0;
+            cancelled = false;
+            const r2 = await sendDanmaku(subs[0], {}, 1, null);
+            assert(r2 && r2.sent === 5 && r2.sent === r2.total, '15b 不取消应全部发送，实际 ' + JSON.stringify(r2));
+
+            // 15c) 开头即取消：sent=0
+            cancelAt = 0; calls = 0;
+            cancelled = true;
+            const r3 = await sendDanmaku(subs[0], {}, 1, null);
+            assert(r3 && r3.sent === 0 && r3.total === 5, '15c 开头即取消应 sent=0，实际 ' + JSON.stringify(r3));
+
+            // 15d) sendModel 抛错应向上抛出（维持原有失败路径）
+            cancelAt = 0; calls = 0;
+            cancelled = false;
+            sendModel = async function () { throw new Error('boom'); };
+            let threw = false;
+            try { await sendDanmaku(subs[0], {}, 1, null); } catch (e) { threw = true; }
+            assert(threw, '15d sendModel 抛错应向上抛');
+
+            sendModel = origSendModel;
+            expandSub = origExpandSub;
+            cancelled = false;
+            subs = savedSubs;
+            console.log('冒烟测试完成：全部通过');
+        } catch (e) {
+            console.error('FAIL: 15) sendDanmaku 探针异常 ' + e.message);
+            process.exitCode = 1;
+        }
+    })();
 `;
 
 out = out.replace(/\}\)\(\);\s*$/, TEST + '\n})();');

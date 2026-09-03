@@ -18,6 +18,11 @@
         $('#cf-verify').addEventListener('click', verifySent);
         $('#cf-reset').addEventListener('click', resetAll);
         $('#cf-preview-all').addEventListener('click', previewAll);
+        $('#cf-offline-preview').addEventListener('change', (e) => {
+            useOfflinePreview = e.target.checked;
+            if (!useOfflinePreview) stopOfflinePreview();   // 切回在线预览时停掉离线画布，避免双重画面
+            status(`预览方式：${useOfflinePreview ? '离线 Canvas 自绘' : '在线 A 站渲染器'}`, 'ok');
+        });
         $('#cf-preview-pause').addEventListener('click', () => {
             const p = getPlayer();
             if (!p) return;

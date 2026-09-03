@@ -7,14 +7,26 @@
         return getAllPresets().find((p) => p.id === activePresetId) || BUILTIN_PRESETS[0];
     }
 
+    // 激活预设是否自带 effects（高级字段）。UI 据此禁用高级编辑区。
+    function activePresetHasEffects() {
+        const preset = getActivePreset();
+        return !!(preset && preset.effects);
+    }
+    // 当前生效的 effects 值：激活预设带 effects 用预设的，否则回落编辑器高级字段 advancedConfig。
+    // 替代原先的全局缓存 activePresetEffects，避免「预览临时改全局再恢复」的污染。
+    function currentEffects() {
+        const preset = getActivePreset();
+        return (preset && preset.effects) ? preset.effects : advancedConfig;
+    }
+
     // 初始化预设：只合并「已主动保存」的微调 options（自定义预设不持久化，刷新后需重新导入）
     function initPresets() {
         getAllPresets().forEach(applySavedOptions);
     }
 
     // 用 config 生成 model，但用伪字幕覆盖时间与文本
-    function modelFrom(cfg, text, timeMs, durationMs) {
-        return buildModel({ time: timeMs, text: text }, cfg, durationMs);
+    function modelFrom(cfg, text, timeMs, durationMs, effects) {
+        return buildModel({ time: timeMs, text: text }, cfg, durationMs, effects);
     }
 
     // ============================================================
@@ -161,7 +173,8 @@
     // 跨句衔接（独立步骤）：统一给「底层 base 层」设置时间。
     // 若跨句分栏 + 有上一句，底层提前到上一句开始时间并延长覆盖；否则底层本句常驻。
     // 与「时序类型」无关——扫光/高亮产生底层后，任何时序都能正确跨句候场。
-    function applyBaseAdvance(layers, ctx) {
+    // （params 参数为钩子统一签名保留，本步骤不读取）
+    function applyBaseAdvance(layers, params, ctx) {
         let baseStart = ctx.sub.time;
         let baseDur = ctx.dur;
         if (ctx.advanceable && ctx.prevTime != null && ctx.prevTime < ctx.sub.time) {
@@ -381,7 +394,12 @@
                 pnum('step.time', '逐字步长(ms)', 0, 2000, 10, 0),
             ], apply(layers, params, ctx) {
                 const mainCount = layers.filter((l) => l.kind !== 'base').length;
-                const stepTime = (pv(params, 'step.time') != null) ? num(pv(params, 'step.time'), 0) : Math.max(120, ctx.dur / Math.max(1, mainCount));
+                // step.time 缺失 / null / ≤0 都视为「自动按 dur/字数 算」，
+                // 避免清空输入框被写回 0 后扫光被静默关掉
+                const raw = pv(params, 'step.time', null);
+                const stepTime = (raw == null || num(raw, 0) <= 0)
+                    ? Math.max(120, ctx.dur / Math.max(1, mainCount))
+                    : num(raw, 0);
                 return staggerMain(layers, ctx, stepTime, true);
             } },
             'declarative': { hidden: true, label: '声明式时序', desc: '逐字延迟，或高亮扫光', params: [
@@ -407,26 +425,40 @@
         'declarative': { split: 'declarative', layout: 'grid', color: 'declarative', timing: 'declarative', motion: 'none' },
     };
 
+    // 管道钩子：标准 5 阶段之间的跨句/后处理步骤。
+    // 默认注册「跨句分栏」（布局后）与「跨句衔接」（时序后）两步；
+    // 新增跨阶段处理只需向 PIPELINE_HOOKS 追加 { after, apply }，不必改 runPipeline 主体。
+    const PIPELINE_HOOKS = [
+        { after: 'layout', apply: applySeqOffset },
+        { after: 'timing', apply: applyBaseAdvance },
+    ];
+    function runHooks(after, data, params, ctx) {
+        for (const h of PIPELINE_HOOKS) {
+            if (h.after === after) data = h.apply(data, params, ctx);
+        }
+        return data;
+    }
+
     // 管道执行器：按组合依次跑 5 个阶段，产出 model[]
     // yOffset：给所有片段 posY 统一加一个偏移（双语 LRC 副语言下移用），0 表示不偏移
-    function runPipeline(sub, cfg, durationMs, comp, params, seq, prevTime, yOffset) {
+    function runPipeline(sub, cfg, durationMs, comp, params, seq, prevTime, yOffset, effects) {
         const ctx = { sub, cfg, dur: durationMs, seq, prevTime, text: (sub.text || '').trim(), advanceable: false };
         let frags = ENGINES.split[comp.split].apply(ctx, params);
         frags = ENGINES.layout[comp.layout].apply(frags, params, ctx);
-        frags = applySeqOffset(frags, params, ctx);   // 跨句分栏（seq 奇偶 → 位置偏移）
+        frags = runHooks('layout', frags, params, ctx);   // 跨句分栏等布局后钩子
         if (yOffset) {
             frags.forEach((f) => { if (f.posY != null) f.posY = clamp(f.posY + yOffset, 1, 99); });
         }
         let layers = ENGINES.color[comp.color].apply(frags, params, ctx);
         layers = ENGINES.timing[comp.timing].apply(layers, params, ctx);
-        layers = applyBaseAdvance(layers, ctx);   // 跨句衔接：底层提前候场（与时序类型无关）
+        layers = runHooks('timing', layers, params, ctx);   // 跨句衔接等时序后钩子
         layers = ENGINES.motion[comp.motion].apply(layers, params, ctx);
         return layers.map((l) => {
             const c = Object.assign({}, cfg);
             if (l.posX != null) c.posX = l.posX;
             if (l.posY != null) c.posY = l.posY;
             if (l.color != null) c.color = l.color;
-            return modelFrom(c, l.text, l.time, l.duration);
+            return modelFrom(c, l.text, l.time, l.duration, effects);
         });
     }
 
@@ -442,13 +474,13 @@
     }
 
     // 跑管道并做安全回退：展开为空或抛错时回退为单条原样 model
-    function safeRun(sub, cfg, durationMs, comp, options, seq, prevTime, yOffset) {
+    function safeRun(sub, cfg, durationMs, comp, options, seq, prevTime, yOffset, effects) {
         try {
-            const models = runPipeline(sub, cfg, durationMs, comp, options || {}, seq, prevTime, yOffset);
-            return models.length ? models : [buildModel(sub, cfg, durationMs)];
+            const models = runPipeline(sub, cfg, durationMs, comp, options || {}, seq, prevTime, yOffset, effects);
+            return models.length ? models : [buildModel(sub, cfg, durationMs, effects)];
         } catch (e) {
             log('预设展开失败，回退原样', e);
-            return [buildModel(sub, cfg, durationMs)];
+            return [buildModel(sub, cfg, durationMs, effects)];
         }
     }
 
@@ -456,28 +488,29 @@
     // seq 为该字幕在选中序列里的序号（从 1 起，供双排等跨句布局使用）
     // prevTime 为上一句的开始时间（ms），供双排 KTV 让下一句暗色层提前出现
     function expandSub(sub, cfg, durationMs, seq, prevTime) {
+        const effects = currentEffects();
         // 双语 LRC：根据 bilingualMode 先归一化文本
         if (sub && sub.main != null && sub.sub != null) {
             if (bilingualMode === 'main' || bilingualMode === 'sub') {
                 const text = bilingualMode === 'sub' ? sub.sub : sub.main;
                 sub = Object.assign({}, sub, { text, main: null, sub: null });
             } else { // auto：上下两行，主/副语言都走当前预设管线
-                return expandBilingual(sub, cfg, durationMs, seq, prevTime);
+                return expandBilingual(sub, cfg, durationMs, seq, prevTime, effects);
             }
         }
 
         const preset = getActivePreset();
         const comp = preset ? (preset.composition || COMPOSITIONS[preset.transform]) : null;
         if (!preset || !comp) {
-            return [buildModel(sub, cfg, durationMs)];
+            return [buildModel(sub, cfg, durationMs, effects)];
         }
-        return safeRun(sub, cfg, durationMs, comp, preset.options, seq, prevTime);
+        return safeRun(sub, cfg, durationMs, comp, preset.options, seq, prevTime, 0, effects);
     }
 
     // 双语 LRC（auto）：主语言在上、副语言在下，副语言整体下移 LANG_GAP 并着金色。
     // 有激活预设时，主/副语言各自走一遍当前预设管线（竖排/KTV/声明式等都对双语生效）；
     // 无预设（组合为空）时回退为简单上下两行。
-    function expandBilingual(sub, cfg, durationMs, seq, prevTime) {
+    function expandBilingual(sub, cfg, durationMs, seq, prevTime, effects) {
         const preset = getActivePreset();
         const comp = preset ? (preset.composition || COMPOSITIONS[preset.transform]) : null;
         if (!comp) {
@@ -488,13 +521,13 @@
             subCfg.posY = clamp(baseY + 5, 1, 99);
             subCfg.color = 0xffd700;
             return [
-                buildModel({ time: sub.time, text: sub.main }, mainCfg, durationMs),
-                buildModel({ time: sub.time, text: sub.sub }, subCfg, durationMs),
+                buildModel({ time: sub.time, text: sub.main }, mainCfg, durationMs, effects),
+                buildModel({ time: sub.time, text: sub.sub }, subCfg, durationMs, effects),
             ];
         }
         const LANG_GAP = 5;
-        const mainModels = safeRun({ time: sub.time, text: sub.main }, cfg, durationMs, comp, preset.options, seq, prevTime, 0);
-        const subModels = safeRun({ time: sub.time, text: sub.sub }, cfg, durationMs, comp, preset.options, seq, prevTime, LANG_GAP);
+        const mainModels = safeRun({ time: sub.time, text: sub.main }, cfg, durationMs, comp, preset.options, seq, prevTime, 0, effects);
+        const subModels = safeRun({ time: sub.time, text: sub.sub }, cfg, durationMs, comp, preset.options, seq, prevTime, LANG_GAP, effects);
         // 副语言整体着色为金色，与主语言区分
         subModels.forEach((m) => { m.wordStyle.color = rgbToHex(0xffd700); });
         return mainModels.concat(subModels);

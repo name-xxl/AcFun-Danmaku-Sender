@@ -88,15 +88,15 @@
     }
 
     function parseColor(colorStr) {
-        // ASS 颜色格式 &HAABBGGRR（AA 为 alpha，可能省略）。取后 6 位 BBGGRR。
-        if (colorStr && /^&H[0-9A-Fa-f]{6,8}$/.test(colorStr)) {
-            const hex = colorStr.substring(2).slice(-6);
-            const r = parseInt(hex.slice(4, 6), 16);
-            const g = parseInt(hex.slice(2, 4), 16);
-            const b = parseInt(hex.slice(0, 2), 16);
-            return (r << 16) | (g << 8) | b;
-        }
-        return 0xffffff;
+        // ASS 颜色格式 &HAABBGGRR（AA 为 alpha，可能省略），末尾 & 是 libass 认可的可选后缀。
+        // 用捕获组取出纯 hex（不含 &H 前缀与尾随 &），再取后 6 位 BBGGRR。
+        const m = /^&H([0-9A-Fa-f]{6,8})&?$/.exec(colorStr || '');
+        if (!m) return 0xffffff;
+        const hex = m[1].slice(-6);
+        const r = parseInt(hex.slice(4, 6), 16);
+        const g = parseInt(hex.slice(2, 4), 16);
+        const b = parseInt(hex.slice(0, 2), 16);
+        return (r << 16) | (g << 8) | b;
     }
 
     // LRC 歌词解析：支持 [mm:ss.xx] 和 [mm:ss.xxx] 时间标签，

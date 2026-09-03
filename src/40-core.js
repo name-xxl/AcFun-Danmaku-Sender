@@ -174,10 +174,6 @@
         { key: 'effects.shine.color', label: '发光色', group: '外发光', type: 'color', default: DEFAULT_SHINE_PLACEHOLDER.color },
     ];
 
-    // 激活预设带 effects 时，覆盖 advancedConfig；否则用编辑器当前值。
-    // 解析规则集中在 buildModel 一处（resolveEffects），避免散落判断。
-    let activePresetEffects = null;
-
     // 规范化 effects：补齐缺失字段，保证 buildModel 访问安全
     function normalizeEffects(ef) {
         const src = ef || {};
@@ -192,16 +188,12 @@
         };
     }
 
-    function resolveEffects() {
-        return normalizeEffects(activePresetEffects || advancedConfig);
-    }
-
     // ============================================================
     //  模型构造（与 A 站原生 getData 完全一致）
     // ============================================================
 
-    function buildModel(sub, cfg, durationMs) {
-        const text = (sub.text || '').trim().slice(0, 255);
+    function buildModel(sub, cfg, durationMs, effects) {
+        const text = Array.from((sub.text || '').trim()).slice(0, 255).join('');
         // 起始时间 = 字幕时间 + 全局时间偏移（ms，可为负，用于微调同步）
         const startTime = Math.max(0, Math.round(sub.time + timeOffset));
         // 运动耗时由相邻字幕间隔自动计算，durationMs 兜底
@@ -214,7 +206,7 @@
             stroke: cfg.stroke !== false,
             color: rgbToHex(cfg.color),
         };
-        const adv = resolveEffects();
+        const adv = normalizeEffects(effects || advancedConfig);
 
         // 简单投影（旧字段，向后兼容）：未在高级字段里配置投影时才启用
         if (cfg.shadow && !adv.shadow) {

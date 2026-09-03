@@ -132,6 +132,7 @@
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-all">▶ 预览全部</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-pause">⏸ 暂停预览</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-reset">↺ 重置</button>
+                <label class="cf-chk" title="勾选=自绘 Canvas 预览（不依赖 A 站渲染器）；取消=复用 A 站原生渲染器"><input type="checkbox" id="cf-offline-preview"${useOfflinePreview ? ' checked' : ''}> 离线预览</label>
             </div>
             <div class="cf-actions-row">
                 <button type="button" class="cf-btn cf-btn-p" id="cf-send">▶ 发送全部</button>
@@ -311,9 +312,20 @@
         if (!targets.length) { status('没有可发送的字幕（未选中或已全部发送）', 'err'); return; }
         const v = getVideoInfo();
         if (!v || !v.videoId) { status('❌ 未获取到视频信息，请确认已登录且在视频页', 'err'); return; }
-        if (!confirm(`发送 ${targets.length} 条高级弹幕？\n发送后无法撤回。`)) { status('已取消'); return; }
+        // 预展开计数：让用户对真实请求量有预期（一句字幕经预设可展开成几十条弹幕）
+        let totalModels = 0;
+        for (let k = 0; k < targets.length; k++) {
+            const s = targets[k];
+            try {
+                const cfg = cfgFor(s);
+                const prevTime = k > 0 ? targets[k - 1].time : null;
+                totalModels += expandSub(s, cfg, calcDurationMs(subs.indexOf(s)), k + 1, prevTime).length;
+            } catch (e) { totalModels += 1; }
+        }
+        if (!confirm(`发送 ${targets.length} 条字幕（展开 ${totalModels} 条弹幕）？\n发送后无法撤回。`)) { status('已取消'); return; }
 
         sending = true; cancelled = false; setBtns(true);
+        lastSentIds = [];   // 清空上次批次的 danmakuId，验证只针对本次发送
 
         for (let k = 0; k < targets.length; k++) {
             if (cancelled) break;
@@ -323,9 +335,18 @@
             try {
                 const cfg = cfgFor(s);
                 const prevTime = k > 0 ? targets[k - 1].time : null;
-                await sendDanmaku(s, cfg, k + 1, prevTime);   // 序号从 1 起，供双排 KTV 决定上下行
-                s.st = 'ok';
-                status(`✓ ${fmt(s.time)} ${s.text}`, 'ok');
+                const r = await sendDanmaku(s, cfg, k + 1, prevTime);   // 序号从 1 起，供双排 KTV 决定上下行
+                if (r.sent < r.total) {
+                    // 中途取消导致部分发送：标 err 让本句留在重发池，且如实告知重发会重复已发部分
+                    s.st = 'err';
+                    const msg = r.sent
+                        ? `已取消：本句仅发送 ${r.sent}/${r.total} 条，重发会重复已发部分`
+                        : '已取消：本句未发送';
+                    status(`✗ ${fmt(s.time)} ${msg}`, 'err');
+                } else {
+                    s.st = 'ok';
+                    status(`✓ ${fmt(s.time)} ${s.text}`, 'ok');
+                }
             } catch (e) {
                 s.st = 'err';
                 status(`✗ ${fmt(s.time)} ${e.message}`, 'err');
@@ -343,6 +364,7 @@
     function resetAll() {
         if (sending) { cancelled = true; }
         subs.forEach((s) => (s.st = ''));
+        stopOfflinePreview();   // 清除离线预览画布
         renderList(); setBtns(false);
         status('↺ 已重置');
     }
@@ -351,6 +373,7 @@
     function removeSubs() {
         if (sending) { cancelled = true; sending = false; }
         expirePreviews();
+        stopOfflinePreview();   // 清除离线预览画布
         subs = [];
         renderList(); setBtns(false);
         const uz = $('#cf-drop');

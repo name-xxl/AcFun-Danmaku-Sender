@@ -16,8 +16,8 @@
                     try { j = JSON.parse(txt); } catch (e) { /* 保留 txt 供日志 */ }
                     resolve({ status: r.status, text: txt, json: j });
                 },
-                onerror: (e) => reject(new Error('网络错误：' + ((e && e.error) || JSON.stringify(e)))),
-                ontimeout: () => reject(new Error('超时')),
+                onerror: (e) => reject(new Error('网络错误（结果未知，可能已发送，重发前请先验证）：' + ((e && e.error) || JSON.stringify(e)))),
+                ontimeout: () => reject(new Error('超时（结果未知，可能已发送，重发前请先验证）')),
             });
         });
     }
@@ -70,13 +70,20 @@
         throw new Error(RESULT_MSG[code] || (j && j.error_msg) || ('result=' + code));
     }
 
-    // 发送一条字幕：按激活预设展开成多个 model，逐个发送
+    // 发送一条字幕：按激活预设展开成多个 model，逐个发送。
+    // 展开出的多条弹幕之间加 MODEL_SEND_INTERVAL 节流，避免一句 KTV 几十条请求背靠背触发限流；
+    // 每条发送前检查 cancelled，让取消能在一句内部的弹幕间及时生效。
+    // 返回 {sent, total}：中途取消时 sent < total（部分发送），由调用方标记未完成，避免整句被误判为已发完。
     async function sendDanmaku(sub, cfg, seq, prevTime) {
         const models = expandSub(sub, cfg, calcDurationMs(subs.indexOf(sub)), seq, prevTime);
-        for (const m of models) {
-            await sendModel(m);
+        let sent = 0;
+        for (let i = 0; i < models.length; i++) {
+            if (cancelled) break;
+            await sendModel(models[i]);
+            sent++;
+            if (i < models.length - 1 && !cancelled) await sleep(MODEL_SEND_INTERVAL);
         }
-        return true;
+        return { sent, total: models.length };
     }
 
     // ============================================================
@@ -96,6 +103,7 @@
         // 播放器每次只查约 20 秒窗口，窗口太大单段返回可能被截断导致漏数。
         // 因此复刻播放器逻辑：每 20 秒一段全片扫，累加去重。
         const durMs = getVideoDurationMs();
+        if (!durMs) { status('⚠️ 无法获取视频时长，无法验证', 'err'); return; }
         const SEG = 20 * 1000;   // 20 秒一段
         const seen = new Map();  // danmakuId -> 弹幕对象（去重）
         let segCount = 0;
@@ -166,7 +174,7 @@
                 }
             }
         }
-        return sec > 0 ? Math.floor(sec * 1000) : 60 * 60 * 1000;  // 兜底 1 小时
+        return sec > 0 ? Math.floor(sec * 1000) : 0;   // 拿不到时长返回 0，由调用方提示，而非兜底扫 1 小时
     }
 
     function getUid() {

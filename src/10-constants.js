@@ -21,6 +21,7 @@
     const DEFAULT_MOVE_TIME = 3000;                  // 运动耗时 ms
     const DEFAULT_DURATION = 5000;                   // 默认存活 ms
     const MAX_DURATION = 30000;                      // 弹幕模式持续上限 ms
+    const MODEL_SEND_INTERVAL = 80;                  // 一句字幕展开出的多条弹幕之间的发送间隔 ms（防限流）
     const KTV_SUNG_COLOR = '#ffd700';                // KTV 唱到色
     const KTV_UNSUNG_COLOR = '#9aa0a6';              // KTV 待唱色
     const DEFAULT_SHADOW_PLACEHOLDER = { x: 1, y: 1, blur: 3, color: '#000000' };   // 投影开启时的占位默认

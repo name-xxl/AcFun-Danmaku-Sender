@@ -16,6 +16,7 @@ const FILES = [
     '50-engine.js',
     '60-network.js',
     '70-preview.js',
+    '71-canvas-preview.js',
     '80-ui.js',
     '85-danmaku.js',
     '90-preset-ui.js',

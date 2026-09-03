@@ -252,7 +252,6 @@
             ['绑定事件', bindEvents],
             ['建立入口', setupEntry],
         ];
-        syncActiveEffects();   // 初始化后同步 effects（激活预设若带 effects 则应用）
         for (const [name, fn] of steps) {
             try {
                 fn();

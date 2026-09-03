@@ -92,7 +92,7 @@
         if (tip) tip.style.display = (owned('posX') || owned('posY')) ? '' : 'none';
 
         // 高级编辑区：激活预设带 effects 时，高级字段由预设决定，整区禁用并提示
-        const hasEffects = !!activePresetEffects;
+        const hasEffects = activePresetHasEffects();
         const advBody = $('#cf-adv-body');
         const advTip = $('#cf-adv-owner-tip');
         if (advBody) {
@@ -130,7 +130,6 @@
         preset.options = Object.assign({}, orig);
         // effects 同样还原到导入时的原值
         if (preset._origEffects) preset.effects = JSON.parse(JSON.stringify(preset._origEffects));
-        syncActiveEffects();
         renderPresetParams();
         status(`↩ 已恢复「${preset.name}」默认参数`, 'ok');
     }
@@ -241,9 +240,8 @@
         activePresetId = sel ? sel.value : 'none';
         // 激活预设带 effects 时，批量发送复用这些高级字段
         const preset = getActivePreset();
-        activePresetEffects = (preset && preset.effects) ? preset.effects : null;
         updatePresetUI();
-        status(`已切换预设：${(preset || {}).name || '无'}${activePresetEffects ? '（含高级字段）' : ''}`, 'ok');
+        status(`已切换预设：${(preset || {}).name || '无'}${activePresetHasEffects() ? '（含高级字段）' : ''}`, 'ok');
     }
 
     function importPreset() { $('#cf-preset-file').click(); }
@@ -364,7 +362,6 @@
         try { localStorage.removeItem('cf_sub_presetOpt_' + p.id); } catch (e) {}
         activePresetId = 'none';
         refreshPresetSelect();
-        syncActiveEffects();
         status(`🗑 已删除「${p.name}」`, 'ok');
     }
 
@@ -449,20 +446,12 @@
                 }
                 if (warns.length) status('⚠️ 导入提醒：' + warns.join('；'), 'err');
                 refreshPresetSelect();
-                // 导入后若当前激活预设带 effects，同步 activePresetEffects
-                syncActiveEffects();
                 status(`✅ 已导入 ${n} 个预设（仅本次会话，刷新后需重新导入）`, 'ok');
             } catch (e) {
                 status('预设 JSON 解析失败: ' + e.message, 'err');
             }
         };
         r.readAsText(file, 'utf-8');
-    }
-
-    // 根据当前激活预设同步 activePresetEffects（导入/删除后调用）
-    function syncActiveEffects() {
-        const preset = getActivePreset();
-        activePresetEffects = (preset && preset.effects) ? preset.effects : null;
     }
 
     // ============================================================
@@ -693,13 +682,11 @@
         customPresets.push({ id: tempId, name: '预览', desc: '', transform: 'none', composition: draft.composition, options: draft.options, params: [] });
         const oldId = activePresetId;
         activePresetId = tempId;
-        syncActiveEffects();
         syncEditorOwnedUI();
         previewMulti(subList, GAP).then(() => {
             activePresetId = oldId;
             const i = customPresets.findIndex((p) => p.id === tempId);
             if (i >= 0) customPresets.splice(i, 1);
-            syncActiveEffects();
             syncEditorOwnedUI();
         });
     }
@@ -718,7 +705,6 @@
         };
         customPresets.push(preset);
         activePresetId = preset.id;
-        syncActiveEffects();
         refreshPresetSelect();
         status(`💾 已保存新预设「${preset.name}」，可像普通预设一样使用`, 'ok');
         closeDevPanel(mask);

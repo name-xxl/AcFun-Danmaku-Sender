@@ -7,6 +7,8 @@
     // 让它不再落在任何播放时间窗口内，避免残留/重复渲染。
     let previewRefs = [];
     let previewSeq = 0;
+    // 预览方式：默认走 Canvas 自绘（离线预览），可切回 A 站渲染器（在线预览）
+    let useOfflinePreview = true;
 
     function expirePreviews() {
         for (const m of previewRefs) {
@@ -35,20 +37,6 @@
     }
 
     async function previewSub(sub) {
-        const p = getPlayer();
-        log('👁 previewSub 开始：', sub && sub.text, '| player=' + !!p, '| loadDanmakuG=' + (p ? typeof p.loadDanmakuG : 'n/a'));
-        if (!p) { status('❌ 未检测到播放器', 'err'); return; }
-        if (typeof p.loadDanmakuG !== 'function') {
-            status('⚠️ 高级弹幕渲染器未就绪，请先点弹幕输入框内第三个按钮展开一次', 'err');
-            return;
-        }
-        if (!ensureRenderer(p)) {
-            status('⚠️ 高级弹幕渲染器初始化失败，请展开一次原生高级弹幕编辑器', 'err');
-            return;
-        }
-
-        expirePreviews();   // 让上一条预览弹幕过期，不再播放时重现
-
         const cfg = cfgFor(sub);
         const idx = subs.indexOf(sub);
         // 手动弹幕（带 duration 字段且不在列表里）直接用其时长
@@ -59,7 +47,30 @@
         const dur = Math.max(500, baseDur - (previewSeq % 3));
         // 按激活预设展开成多个 model（seq 从 1 起，保证与预览全部/发送的奇偶一致）
         const models = expandSub(sub, cfg, dur, 1);
-        log('👁 展开出 ' + models.length + ' 个 model，首条 startTime=' + (models[0] && models[0].startTime));
+        log('👁 previewSub：', sub && sub.text, '→ ' + models.length + ' 个 model，离线=' + useOfflinePreview);
+
+        // 离线预览：Canvas 自绘，无需渲染器 / 去重 hack，seek 到字幕前让 currentTime 落进窗口
+        if (useOfflinePreview) {
+            startOfflinePreview(models);
+            const p = getPlayer();
+            if (p) { seekTo(Math.max(0, models[0].startTime - 400)); playVideo(); }
+            status(`👁 预览：${sub.text}`, 'busy');
+            return;
+        }
+
+        // —— 在线预览（复用 A 站渲染器），保留原有时序 hack ——
+        stopOfflinePreview();   // 切到在线预览时清掉离线画布，避免双重画面
+        const p = getPlayer();
+        if (!p) { status('❌ 未检测到播放器', 'err'); return; }
+        if (typeof p.loadDanmakuG !== 'function') {
+            status('⚠️ 高级弹幕渲染器未就绪，请先点弹幕输入框内第三个按钮展开一次', 'err');
+            return;
+        }
+        if (!ensureRenderer(p)) {
+            status('⚠️ 高级弹幕渲染器初始化失败，请展开一次原生高级弹幕编辑器', 'err');
+            return;
+        }
+        expirePreviews();   // 让上一条预览弹幕过期，不再播放时重现
         models.forEach((m) => {
             m.id = 'cf-prev-' + (++previewSeq);
             // 关键：渲染器按「去 id 后的完整 JSON」做内容去重且永不清理，
@@ -94,6 +105,32 @@
 
     // 预览全部：把全部字幕一次性铺到视频上，从头过一遍
     function previewAll() {
+        if (!subs.length) { status('请先上传字幕文件', 'err'); return; }
+        const selected = subs.filter((s) => s.selected);
+        if (!selected.length) { status('没有选中的字幕，请先勾选', 'err'); return; }
+
+        const models = [];
+        selected.forEach((s, k) => {
+            const i = subs.indexOf(s);
+            const cfg = cfgFor(s);
+            // k = 选中序列里的序号（从 0 开始），双排 KTV 用它决定上下行
+            const prevTime = k > 0 ? selected[k - 1].time : null;
+            const expanded = expandSub(s, cfg, calcDurationMs(i), k + 1, prevTime);
+            expanded.forEach((m) => { models.push(m); });
+        });
+
+        // 离线预览：Canvas 自绘，seek 到首条之前留余量再 play
+        if (useOfflinePreview) {
+            startOfflinePreview(models);
+            const p = getPlayer();
+            if (p) { seekTo(Math.max(0, selected[0].time + timeOffset - 400)); playVideo(); }
+            previewPaused = false;
+            status(`▶ 预览全部：${selected.length} 条字幕 → ${models.length} 条弹幕`, 'busy');
+            return;
+        }
+
+        // —— 在线预览（复用 A 站渲染器）——
+        stopOfflinePreview();   // 切到在线预览时清掉离线画布，避免双重画面
         const p = getPlayer();
         if (!p) { status('❌ 未检测到播放器', 'err'); return; }
         if (typeof p.loadDanmakuG !== 'function') {
@@ -104,25 +141,12 @@
             status('⚠️ 高级弹幕渲染器初始化失败，请展开一次原生高级弹幕编辑器', 'err');
             return;
         }
-        if (!subs.length) { status('请先上传字幕文件', 'err'); return; }
-
         expirePreviews();
-        const selected = subs.filter((s) => s.selected);
-        if (!selected.length) { status('没有选中的字幕，请先勾选', 'err'); return; }
-        const models = [];
-        selected.forEach((s, k) => {
-            const i = subs.indexOf(s);
-            const cfg = cfgFor(s);
-            // k = 选中序列里的序号（从 0 开始），双排 KTV 用它决定上下行
-            const prevTime = k > 0 ? selected[k - 1].time : null;
-            const expanded = expandSub(s, cfg, calcDurationMs(i), k + 1, prevTime);
-            expanded.forEach((m) => {
-                m.id = 'cf-prevall-' + (++previewSeq) + '-' + i;
-                m.__seq = previewSeq;   // 绕过渲染器内容去重
-                m.user = String(getUid() || '');   // 通过「只看自己」过滤器（同 previewSub）
-                previewRefs.push(m);
-                models.push(m);
-            });
+        models.forEach((m, idx) => {
+            m.id = 'cf-prevall-' + (++previewSeq) + '-' + idx;
+            m.__seq = previewSeq;   // 绕过渲染器内容去重
+            m.user = String(getUid() || '');   // 通过「只看自己」过滤器（同 previewSub）
+            previewRefs.push(m);
         });
 
         // 时序修复（同 previewSub）：先暂停 → seek 到首条之前留余量 → 注入全部 → play。
@@ -147,6 +171,29 @@
     // 供开发面板预览「两句同时出现」的跨句效果（如 KTV 双排、竖排 KTV）使用。
     // subList: [{ time, text, duration? }]，每句用 seq（k+1）与 prevTime（前一句时间）衔接。
     function previewMulti(subList, durMs) {
+        if (!subList || !subList.length) { status('没有可预览的内容', 'err'); return Promise.resolve(); }
+
+        const models = [];
+        subList.forEach((s, k) => {
+            const cfg = cfgFor(s);
+            const prevTime = k > 0 ? subList[k - 1].time : null;
+            const dur = (s.duration != null) ? s.duration : durMs;
+            const expanded = expandSub(s, cfg, dur, k + 1, prevTime);
+            expanded.forEach((m) => { models.push(m); });
+        });
+        if (!models.length) { status('预览展开为空', 'err'); return Promise.resolve(); }
+
+        // 离线预览：Canvas 自绘
+        if (useOfflinePreview) {
+            startOfflinePreview(models);
+            const p = getPlayer();
+            if (p) { seekTo(Math.max(0, subList[0].time + timeOffset - 400)); playVideo(); }
+            status(`▶ 预览：${subList.length} 句 → ${models.length} 条弹幕`, 'busy');
+            return Promise.resolve();
+        }
+
+        // —— 在线预览（复用 A 站渲染器）——
+        stopOfflinePreview();   // 切到在线预览时清掉离线画布，避免双重画面
         const p = getPlayer();
         if (!p || typeof p.loadDanmakuG !== 'function') {
             status('⚠️ 高级弹幕渲染器未就绪，请先点弹幕输入框内第三个按钮展开一次', 'err');
@@ -156,24 +203,13 @@
             status('⚠️ 高级弹幕渲染器初始化失败，请展开一次原生高级弹幕编辑器', 'err');
             return Promise.resolve();
         }
-        if (!subList || !subList.length) { status('没有可预览的内容', 'err'); return Promise.resolve(); }
-
         expirePreviews();
-        const models = [];
-        subList.forEach((s, k) => {
-            const cfg = cfgFor(s);
-            const prevTime = k > 0 ? subList[k - 1].time : null;
-            const dur = (s.duration != null) ? s.duration : durMs;
-            const expanded = expandSub(s, cfg, dur, k + 1, prevTime);
-            expanded.forEach((m) => {
-                m.id = 'cf-prevm-' + (++previewSeq) + '-' + k;
-                m.__seq = previewSeq;
-                m.user = String(getUid() || '');
-                previewRefs.push(m);
-                models.push(m);
-            });
+        models.forEach((m, idx) => {
+            m.id = 'cf-prevm-' + (++previewSeq) + '-' + idx;
+            m.__seq = previewSeq;
+            m.user = String(getUid() || '');
+            previewRefs.push(m);
         });
-        if (!models.length) { status('预览展开为空', 'err'); return Promise.resolve(); }
 
         pauseVideo();
         seekTo(Math.max(0, subList[0].time + timeOffset - 400));
