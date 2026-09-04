@@ -70,7 +70,15 @@
     let sliceMode = false;
     let timeOffsetBackup = 0;   // 进入切片模式前的手动偏移值，退出时恢复
     // 预设相关
-    let customPresets = [];      // 导入的自定义预设
+    // 导入的自定义预设：持久化到 localStorage，刷新后仍在（activePresetId 不记忆，刷新回「无预设」）
+    let customPresets = [];
+    try {
+        const saved = storeGet('customPresets', null);
+        if (saved) customPresets = JSON.parse(saved);
+    } catch (e) { customPresets = []; }
+    function persistCustomPresets() {
+        try { storeSet('customPresets', JSON.stringify(customPresets)); } catch (e) {}
+    }
     // 预设选择不记忆：每次刷新/打开默认回到「无预设」，避免误用上次的效果
     let activePresetId = 'none';
     let subs2 = [];              // 第二语言字幕（多语预设用）

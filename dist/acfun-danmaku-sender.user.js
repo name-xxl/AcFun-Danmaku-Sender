@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AcFun 弹幕字幕发送器 (H5版高级弹幕)
 // @namespace    https://github.com/acfun-danmaku-sender
-// @version      6.5.0
+// @version      6.5.1
 // @description  上传 SRT/ASS/LRC 字幕文件，按时间轴自动发送高级弹幕。仿原生面板，替换 A 站高级弹幕编辑器并提供视频预览。
 // @author       name_xxl
 // @match        *://www.acfun.cn/v/ac*
@@ -406,7 +406,15 @@
     let sliceMode = false;
     let timeOffsetBackup = 0;   // 进入切片模式前的手动偏移值，退出时恢复
     // 预设相关
-    let customPresets = [];      // 导入的自定义预设
+    // 导入的自定义预设：持久化到 localStorage，刷新后仍在（activePresetId 不记忆，刷新回「无预设」）
+    let customPresets = [];
+    try {
+        const saved = storeGet('customPresets', null);
+        if (saved) customPresets = JSON.parse(saved);
+    } catch (e) { customPresets = []; }
+    function persistCustomPresets() {
+        try { storeSet('customPresets', JSON.stringify(customPresets)); } catch (e) {}
+    }
     // 预设选择不记忆：每次刷新/打开默认回到「无预设」，避免误用上次的效果
     let activePresetId = 'none';
     let subs2 = [];              // 第二语言字幕（多语预设用）
@@ -3232,8 +3240,10 @@
     // 导出弹窗：补全命名/描述/作者后导出为 JSON 文件（接收方用「导入预设」使用，不涉及脚本改动）。
     // preset 为要导出的预设对象：列表里的预设会把填写的元信息写回本体（下次导出记住），
     // 临时构造的预设（如高级编辑导出）仅用于本次导出。作者默认填当前 A 站昵称 + uid。
-    function openExportDialog(preset) {
+    function openExportDialog(preset, onConfirm) {
         if (!preset) { status('没有可导出的预设', 'err'); return; }
+        // onConfirm 存在 → 保存模式（补全信息后回调保存），否则 → 导出 JSON 模式
+        const isSave = typeof onConfirm === 'function';
         const old = $('#cf-export-panel');
         if (old) old.remove();
         const mask = document.createElement('div');
@@ -3241,14 +3251,14 @@
         mask.className = 'cf-dev-panel-mask';
         mask.innerHTML = `
             <div class="cf-dev-dlg">
-                <p class="cf-dev-title">📤 导出预设（JSON）</p>
-                <p class="cf-dev-sub">补全分享信息后导出 JSON 文件；导入方通过「📥 导入预设」使用</p>
+                <p class="cf-dev-title">${isSave ? '💾 保存预设' : '📤 导出预设（JSON）'}</p>
+                <p class="cf-dev-sub">${isSave ? '补全预设信息后保存到当前会话' : '补全分享信息后导出 JSON 文件；导入方通过「📥 导入预设」使用'}</p>
                 <div class="cf-exp-row"><label>名称</label><input type="text" id="cf-exp-name" placeholder="预设名称（必填）"></div>
                 <div class="cf-exp-row"><label>描述</label><textarea id="cf-exp-desc" rows="2" placeholder="预设效果说明（可选）"></textarea></div>
                 <div class="cf-exp-row"><label>作者</label><input type="text" id="cf-exp-author" placeholder="默认填当前登录的 A 站昵称 + uid"></div>
                 <div class="cf-dev-foot">
                     <button type="button" class="cf-btn cf-btn-b" data-act="cancel">取消</button>
-                    <button type="button" class="cf-btn cf-btn-p" data-act="export">📤 导出 JSON</button>
+                    <button type="button" class="cf-btn cf-btn-p" data-act="export">${isSave ? '💾 保存' : '📤 导出 JSON'}</button>
                 </div>
             </div>`;
         mask.querySelector('#cf-exp-name').value = preset.name || '';
@@ -3268,6 +3278,7 @@
             preset.name = name;
             preset.desc = desc;
             preset.author = author;
+            if (isSave) { onConfirm(preset, close); return; }
             downloadJson('预设-' + name.replace(/[\\/:*?"<>|]/g, '_') + '.json', presetsToExport([preset])[0]);
             refreshPresetSelect();
             status(`📤 已导出「${name}」${author ? ' · 作者 ' + author : ''}`, 'ok');
@@ -3279,7 +3290,10 @@
 
     // 导出单个预设（当前选中的，含内置与自定义）：先补全命名/描述/作者再导出
     function exportCurrentPreset() {
-        openExportDialog(getActivePreset());
+        const p = getActivePreset();
+        // 「无预设」是空占位（id='none'），导出后导入会与内置冲突且无实际内容，直接禁止
+        if (!p || p.id === 'none') { status('「无预设」不可导出，请先选择或导入一个有内容的预设', 'err'); return; }
+        openExportDialog(p);
     }
 
     // 导出全部自定义预设（备份）
@@ -3301,6 +3315,7 @@
         customPresets.splice(idx, 1);
         // 清理该预设保存过的参数
         try { localStorage.removeItem('cf_sub_presetOpt_' + p.id); } catch (e) {}
+        persistCustomPresets();
         activePresetId = 'none';
         refreshPresetSelect();
         status(`🗑 已删除「${p.name}」`, 'ok');
@@ -3363,6 +3378,11 @@
                 const warns = [];
                 for (const p of arr) {
                     if (!p || !p.id || !p.name) continue;
+                    // id 与内置预设冲突时重新生成（如「导出当前」导出的内置预设），
+                    // 否则导入后 getActivePreset 会命中内置、删除时被误判为「内置不可删除」
+                    if (BUILTIN_PRESETS.some((b) => b.id === p.id)) {
+                        p.id = 'custom-' + p.id + '-' + Math.random().toString(36).slice(2, 8);
+                    }
                     // 校验 transform 合法性
                     if (p.transform && p.transform !== 'none' && !COMPOSITIONS[p.transform]) {
                         status(`⚠️ 预设「${p.name}」的 transform 类型无效，已跳过`, 'err');
@@ -3386,8 +3406,9 @@
                     n++;
                 }
                 if (warns.length) status('⚠️ 导入提醒：' + warns.join('；'), 'err');
+                persistCustomPresets();
                 refreshPresetSelect();
-                status(`✅ 已导入 ${n} 个预设（仅本次会话，刷新后需重新导入）`, 'ok');
+                status(`✅ 已导入 ${n} 个预设（已持久化，刷新后仍在）`, 'ok');
             } catch (e) {
                 status('预设 JSON 解析失败: ' + e.message, 'err');
             }
@@ -3666,13 +3687,19 @@
             composition: draft.composition,
             options: draft.options,
             params: draft.params,   // 带上引擎声明的参数，保存后预设面板可直接微调
-            author: getAcfunAuthor(),   // 自动署名（A 站昵称 + uid），导出弹窗可直接改
+            author: getAcfunAuthor(),   // 自动署名（A 站昵称 + uid），可在填写面板中改
         };
-        customPresets.push(preset);
-        activePresetId = preset.id;
-        refreshPresetSelect();
-        status(`💾 已保存新预设「${preset.name}」，可像普通预设一样使用`, 'ok');
-        closeDevPanel(mask);
+        // 弹信息填写面板（命名/描述/作者），确认后保存到会话并导出 JSON 文件
+        openExportDialog(preset, (p, close) => {
+            customPresets.push(p);
+            persistCustomPresets();
+            activePresetId = p.id;
+            refreshPresetSelect();
+            downloadJson('预设-' + p.name.replace(/[\\/:*?"<>|]/g, '_') + '.json', presetsToExport([p])[0]);
+            status(`💾 已保存并导出「${p.name}」`, 'ok');
+            close();
+            closeDevPanel(mask);
+        });
     }
 
     function loadSub2File(file) {
