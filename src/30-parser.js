@@ -1,6 +1,11 @@
     // ============================================================
     //  字幕解析（保留原有 SRT / ASS 逻辑）
     // ============================================================
+    // 理解卡｜我拥有：parseSRT / parseASSWithStyles / parseLRC / parseSub（按扩展名分发的唯一入口）。
+    // 我承诺：字符串进、{time, endTime?, text, style?, main?, sub?}[] 出；纯函数无 DOM/window（smoke #11 钉住）。
+    // 我永不：不读播放器、不碰 UI、不做任何「发送/预览」语义的事。
+    // 改我前读：ASS 的 &HAABBGGRR 色与 numpad→A 站锚点映射在 parseASSStyle；LRC 双语靠「/或| 与同时间戳
+    //   相邻行」配对；新格式只需在 parseSub 加分发；输出结构变更会波及 50-engine 的 cfgFor 与切片/双语逻辑。
 
     function parseSRT(t) {
         t = t.replace(/^﻿/, '');

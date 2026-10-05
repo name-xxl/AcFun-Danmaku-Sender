@@ -1,6 +1,13 @@
     // ============================================================
     //  发送
     // ============================================================
+    // 理解卡｜我拥有：gmPost/sendModel/sendDanmaku/verifySent/getUid/getAcfunAuthor——全部对外网络的唯一出口。
+    // 我承诺：sendModel 参数与 A 站原生请求逐字段一致（请求层 color 是十进制、wordStyle.color 是 #rrggbb，两套口径别混）；
+    //   句内节流 MODEL_SEND_INTERVAL=80ms、句间 sendInterval 默认 400ms（风控底线，RISKS R3）；
+    //   成功的 danmakuId 记入 lastSentIds 供 verifySent 匹配。
+    // 我永不：不做渲染/预览（那是 70/71 的职责）；「结果未知（可能已发送）」时绝不自动重试——重发前必须先 verifySent。
+    // 改我前读：verifySent 复刻播放器 pollByPosition 20 秒窗口全片扫描（new-danmaku/list 不返回高级弹幕）；
+    //   uid 在 cookie 的 auth_key（字符串，严格相等比较）；错误码 128019–128024 有人话映射。
 
     function gmPost(url, data) {
         return new Promise((resolve, reject) => {

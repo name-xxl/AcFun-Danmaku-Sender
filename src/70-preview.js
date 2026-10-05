@@ -1,6 +1,14 @@
     // ============================================================
     //  预览（复用原生高级弹幕渲染器）
     // ============================================================
+    // 理解卡｜我拥有：previewSub/previewAll/previewMulti 双模式预览调度（默认离线 Canvas，可切 A 站渲染器）
+    //   + 在线注入的全部 hack。
+    // 我承诺：在线预览四件套——ensureRenderer（.danmaku-g-rendered-stage 探测 + initAdvancedDanmaku 兜底）、
+    //   __seq 绕内容指纹去重、user=uid 过 IsOwnDanmkau 过滤器、pause→seek(-400ms)→等600ms→loadDanmakuG→play 时序；
+    //   预览弹幕用 expirePreviews 过期（startTime 置极大值），绝不触碰正式弹幕池。
+    // 我永不：不绕过 loadDanmakuG 直接 addDanmaku；预览不发任何网络请求。
+    // 改我前读：P2 spike 就是把这套 hack 拿到真实页面验证口径，spike 若挂这里是第一现场；
+    //   「短视频句尾字被 timeFrame 过滤」的等待时序是实测踩出来的坑，别当成可优化项删掉。
 
     // 预览弹幕走 loadDanmakuG → addDanmaku，会进入正式弹幕池且无法按 id 删除。
     // 因此记录每次预览的 model 引用，预览前把旧预览“过期”（startTime 设为极大值），

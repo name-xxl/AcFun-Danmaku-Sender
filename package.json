@@ -1,9 +1,12 @@
 {
   "name": "acfun-adl",
-  "version": "6.6.0",
+  "version": "6.7.0",
   "description": "视频的高级弹幕层编辑器——给视频加一条可发布的字幕/特效轨道，所见即所得，发送只是导出",
   "scripts": {
-    "build": "node build.js"
+    "build": "node build.js",
+    "check": "node tools/check.js",
+    "test": "node tools/smoke-test.js",
+    "gate": "npm run build && npm run check && npm run test"
   },
   "license": "MIT"
 }

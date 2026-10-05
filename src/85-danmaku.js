@@ -1,6 +1,12 @@
     // ============================================================
     //  弹幕模式（手动单条输入）
     // ============================================================
+    // 理解卡｜我拥有：switchPanelMode（预设/样式区 DOM 在两模式间搬移复用）、makeManualSub 虚拟字幕、
+    //   高级编辑全字段（TIMING_FUNCS 28 缓动 / readAdvancedConfig / renderMoves / exportAdvancedPreset）。
+    // 我承诺：单条与批量走同一条 expandSub → sendModel 管线（单发不是特例路径）。
+    // 我永不：不碰批量/时间轴发送（80-ui 的 startSend 职责）；syncAdvEnableUI 是状态双源补丁（病灶②存量），
+    //   P3 要消灭这个模式而不是复制它。
+    // 改我前读：P3 我并入 gdm-panel 成「简单模式」；预设区/样式区 DOM 节点是两模式共享的，动布局先想另一半。
 
     // 切换 字幕模式 / 弹幕模式（预设、样式区在两种模式间复用）
     function switchPanelMode(mode) {

@@ -5,11 +5,12 @@ const path = require('path');
 const vm = require('vm');
 
 const ROOT = path.join(__dirname, '..');
-const FILES = [
-    '00-header.js', '10-constants.js', '20-utils.js', '30-parser.js', '40-core.js',
-    '50-engine.js', '60-network.js', '70-preview.js', '71-canvas-preview.js', '80-ui.js', '85-danmaku.js',
-    '90-preset-ui.js', '95-events.js', '99-main.js',
-];
+// FILES 单一来源：build.js（拼接顺序即依赖顺序）。此处解析引用，避免两份清单漂移。
+const FILES = (() => {
+    const m = fs.readFileSync(path.join(ROOT, 'build.js'), 'utf8').match(/const FILES = \[([\s\S]*?)\];/);
+    if (!m) throw new Error('无法从 build.js 解析 FILES 数组');
+    return m[1].split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean);
+})();
 
 let out = '';
 for (const f of FILES) out += fs.readFileSync(path.join(ROOT, 'src', f), 'utf8');

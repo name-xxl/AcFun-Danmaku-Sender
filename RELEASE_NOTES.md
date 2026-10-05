@@ -1,6 +1,8 @@
-## 更新内容（6.6.0）
+## 更新内容（6.7.0）
 
-- 定位重置：从「弹幕字幕发送器」转向「高级弹幕层编辑器」——给视频加一条可发布的字幕/特效轨道，发送只是导出
-- 改名：AcFun 高级弹幕层编辑器（ADL），原名 AcFun Danmaku Sender；构建产物改为 dist/acfun-adl.user.js（旧脚本请卸载后重装）
-- README 按新定位重写：给谁用 / non-goals / 三分钟上手 / 四道闸公开承诺 / 旧版迁移
-- 代码零行为变更（本笔纯文档与标识；编辑器形态与四道闸随后续版本落地）
+- 工程地基：新增 tools/check.js 门禁——FILES 单源 / 版本三处一致 / 孤儿文件 / 禁模式守门（confirm/alert ≤3、setInterval ≤1，白名单只减不增）
+- package.json 补齐四门 scripts：build → check → test，gate 一键串联
+- smoke-test.js 拼接清单改为解析 build.js 的 FILES（消除两份清单漂移风险）
+- 新增 RISKS.md 风险登记（R1–R7）；14 个源文件头注补「理解卡」（我拥有/我承诺/我永不/改我前读）
+- @namespace 回指实际仓库 acfun-danmaku-sender（仓库暂不改名；package/dist 的 acfun-adl 名不变，真改名时一并切换）
+- 代码零行为变更（纯工程设施与注释）

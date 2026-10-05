@@ -1,6 +1,12 @@
     // ============================================================
     //  预设 UI 逻辑
     // ============================================================
+    // 理解卡｜我拥有：buildParamControl（参数控件生成器——schema 化的现有雏形，支持 select/color/checkbox/text/number）、
+    //   预设导入/导出/删除、开发面板全套（草稿持久化/预览/保存为预设）。
+    // 我承诺：导入校验只提醒不阻断（smoke #2 钉住）；导出不泄露内部字段（_origOptions 等，smoke #8）。
+    // 我永不：confirm( 白名单 3 处我占 2（删除预设/重置开发面板）；新增交互一律走内联确认，不再加 confirm。
+    // 改我前读：全仓最大模块（793 行）；P3 我被 schema 生成器 + store 范式取代（参照 svfeed settingspanel），
+    //   但 buildParamControl（尤其 color 类型）是迁移资产，别推倒重写。
 
     function refreshPresetSelect() {
         const sel = $('#cf-preset');

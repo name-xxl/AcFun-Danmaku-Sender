@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AcFun 高级弹幕层编辑器 (ADL)
-// @namespace    https://github.com/acfun-adl
-// @version      6.6.0
+// @namespace    https://github.com/acfun-danmaku-sender
+// @version      6.7.0
 // @description  视频的高级弹幕层编辑器：给视频加一条可发布的字幕/特效轨道，所见即所得，发送只是导出。导入 SRT/ASS/LRC，预设特效，彩排通过才可导出。
 // @author       name_xxl
 // @match        *://www.acfun.cn/v/ac*
@@ -16,9 +16,18 @@
 (function () {
     'use strict';
 
+    // 理解卡｜我拥有：@元数据与 IIFE 外壳（整个脚本的闭包边界）。
+    // 我承诺：@version 与 package.json 一致（check 门禁校验）；@grant 只列实际用到的 API。
+    // 我永不：不放任何逻辑代码；@name/@namespace 是油猴身份键，改动 = 用户需卸载重装。
+    // 改我前读：新增 GM API 必须同步补 @grant；本文件的 `(function(){` 由 99-main.js 末尾的 `})();` 收口。
+
     // ============================================================
     //  常量
     // ============================================================
+    // 理解卡｜我拥有：全脚本常量与默认值（字体/锚点/坐标/时长/节流间隔/内置预设 BUILTIN_PRESETS）。
+    // 我承诺：常量只在此声明；内置预设过 sanitizePresetParams 零警告零剔除（smoke #1 钉住）。
+    // 我永不：不放运行时可变状态（那是 40-core 的职责）；不做 DOM 操作。
+    // 改我前读：坐标是 0–100 屏幕百分比、scale 是倍数（1=100%）——API.md 实测口径，别按直觉改。
 
     // A 站高级弹幕支持的字体（原生下拉框只有这 5 种）
     const FONTS = ['SimHei', 'SimSun', 'FangSong', 'NSimSun', 'Microsoft YaHei'];
@@ -100,6 +109,10 @@
     // ============================================================
     //  工具
     // ============================================================
+    // 理解卡｜我拥有：log/sleep/getByPath/setByPath/t2ms/ass2ms 等零依赖工具函数。
+    // 我承诺：纯函数、无状态、无 DOM 依赖（log 只向 console 输出）。
+    // 我永不：不引用其他 src 模块的东西（我是最底层）。
+    // 改我前读：拼接顺序 = 依赖顺序，我被所有模块使用，签名变更影响面是全仓。
 
     const log = (...args) => console.log('%c[弹幕字幕]', 'color:#8b5cf6;font-weight:bold;', ...args);
 
@@ -177,6 +190,11 @@
     // ============================================================
     //  字幕解析（保留原有 SRT / ASS 逻辑）
     // ============================================================
+    // 理解卡｜我拥有：parseSRT / parseASSWithStyles / parseLRC / parseSub（按扩展名分发的唯一入口）。
+    // 我承诺：字符串进、{time, endTime?, text, style?, main?, sub?}[] 出；纯函数无 DOM/window（smoke #11 钉住）。
+    // 我永不：不读播放器、不碰 UI、不做任何「发送/预览」语义的事。
+    // 改我前读：ASS 的 &HAABBGGRR 色与 numpad→A 站锚点映射在 parseASSStyle；LRC 双语靠「/或| 与同时间戳
+    //   相邻行」配对；新格式只需在 parseSub 加分发；输出结构变更会波及 50-engine 的 cfgFor 与切片/双语逻辑。
 
     function parseSRT(t) {
         t = t.replace(/^﻿/, '');
@@ -340,6 +358,14 @@
     //  页面对象（player / H5Player）必须通过 unsafeWindow 访问，否则
     //  `instanceof window.H5Player` 会因 H5Player 为 undefined 而抛 TypeError。
     // ============================================================
+    // 理解卡｜我拥有：播放器封装（getPlayer/seekTo/playVideo…，unsafeWindow 沙箱桥）、全局可变状态
+    //   （subs/styleSource/timeOffset/advancedConfig…）、localStorage 存取（storeGet/storeSet，键前缀 cf_sub_）、
+    //   buildModel（构造与 A 站原生 getData 完全一致的 model）、ADJUSTABLE_FIELDS（类 schema 可调字段表）。
+    // 我承诺：buildModel 的字段集 = API.md §五 渲染端只读字段；全局状态的声明入口集中在此。
+    // 我永不：不发网络请求（60-network 的职责）；buildModel 不补 hack 字段（__seq/user 是 70-preview 的
+    //   预览期补丁，正式发送的 model 不带）。
+    // 改我前读：getPlayer 是宽松 duck-typing（跨 realm 不能 instanceof）；content 按码点截断 255；
+    //   新增全局状态必须想清楚持久化键名（cf_sub_*），旧键 = 旧版迁移依据（RISKS R5）。
 
     const pageWin = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
 
@@ -629,6 +655,14 @@
     // ============================================================
     //  预设引擎：把一条字幕按激活预设展开成多个弹幕 model
     // ============================================================
+    // 理解卡｜我拥有：五阶段预设引擎——STAGES(split/layout/color/timing/motion)、ENGINES 注册表、
+    //   params schema 辅助（pnum/psel/pcol/pchk/ptext）、PIPELINE_HOOKS、
+    //   expandSub/cfgFor/calcDurationMs（字幕 → model[] 的唯一入口，60-network 与 70-preview 都走它）。
+    // 我承诺：引擎注册即可用（开发面板按 params 自动渲染表单）；safeRun 兜底——引擎抛错/空结果回退单条原样；
+    //   预设参数 key 带阶段前缀防冲突（跨阶段联动的共享参数才用裸名）。
+    // 我永不：不做 DOM 构造（唯一例外：measureTextPx 的离屏 canvas 测宽）；不发网络请求。
+    // 改我前读：expandSub 的 seq/prevTime 是跨句衔接（KTV 双排/applySeqOffset）的生命线，别删；
+    //   timingFunction 只认 CSS 合法值（API.md §九，非法值 = 弹幕停在 (0,0)）；smoke #12–14 钉住大量行为，改引擎先跑门。
 
     function getAllPresets() { return BUILTIN_PRESETS.concat(customPresets); }
     function getActivePreset() {
@@ -1327,6 +1361,13 @@
     // ============================================================
     //  发送
     // ============================================================
+    // 理解卡｜我拥有：gmPost/sendModel/sendDanmaku/verifySent/getUid/getAcfunAuthor——全部对外网络的唯一出口。
+    // 我承诺：sendModel 参数与 A 站原生请求逐字段一致（请求层 color 是十进制、wordStyle.color 是 #rrggbb，两套口径别混）；
+    //   句内节流 MODEL_SEND_INTERVAL=80ms、句间 sendInterval 默认 400ms（风控底线，RISKS R3）；
+    //   成功的 danmakuId 记入 lastSentIds 供 verifySent 匹配。
+    // 我永不：不做渲染/预览（那是 70/71 的职责）；「结果未知（可能已发送）」时绝不自动重试——重发前必须先 verifySent。
+    // 改我前读：verifySent 复刻播放器 pollByPosition 20 秒窗口全片扫描（new-danmaku/list 不返回高级弹幕）；
+    //   uid 在 cookie 的 auth_key（字符串，严格相等比较）；错误码 128019–128024 有人话映射。
 
     function gmPost(url, data) {
         return new Promise((resolve, reject) => {
@@ -1531,6 +1572,14 @@
     // ============================================================
     //  预览（复用原生高级弹幕渲染器）
     // ============================================================
+    // 理解卡｜我拥有：previewSub/previewAll/previewMulti 双模式预览调度（默认离线 Canvas，可切 A 站渲染器）
+    //   + 在线注入的全部 hack。
+    // 我承诺：在线预览四件套——ensureRenderer（.danmaku-g-rendered-stage 探测 + initAdvancedDanmaku 兜底）、
+    //   __seq 绕内容指纹去重、user=uid 过 IsOwnDanmkau 过滤器、pause→seek(-400ms)→等600ms→loadDanmakuG→play 时序；
+    //   预览弹幕用 expirePreviews 过期（startTime 置极大值），绝不触碰正式弹幕池。
+    // 我永不：不绕过 loadDanmakuG 直接 addDanmaku；预览不发任何网络请求。
+    // 改我前读：P2 spike 就是把这套 hack 拿到真实页面验证口径，spike 若挂这里是第一现场；
+    //   「短视频句尾字被 timeFrame 过滤」的等待时序是实测踩出来的坑，别当成可优化项删掉。
 
     // 预览弹幕走 loadDanmakuG → addDanmaku，会进入正式弹幕池且无法按 id 删除。
     // 因此记录每次预览的 model 引用，预览前把旧预览“过期”（startTime 设为极大值），
@@ -1761,6 +1810,12 @@
     // ============================================================
     //  离线预览（Canvas 自绘，不依赖 A 站渲染器）
     // ============================================================
+    // 理解卡｜我拥有：easeProgress（linear/关键字/任意 cubic-bezier，牛顿迭代+二分兜底）、
+    //   interpolateModel（多帧插值）、drawModel（九宫格锚点/多行/描边/投影）、RAF 渲染循环。
+    // 我承诺：不依赖 A 站渲染器；只消费 buildModel 产出的 model[]；缓动精度有独立参考实现对拍（smoke #14.5）。
+    // 我永不：不支持的能力明说不硬撑（blur/外发光、rotateX/Y 透视均不支持）；不在画布之外写 DOM。
+    // 改我前读：我独立于 A 站渲染器但不独立于播放器——必须挂在真实 <video> 上跟播放时钟；
+    //   RISKS R1 若成立（spike 失败）我升主预览（P3），届时能力缺口（外发光等）需补。
 
     // 缓动进度：timingFunction → 归一化进度。
     // 支持 CSS 关键字（linear/ease-*）与 cubic-bezier(x1,y1,x2,y2) 字符串；
@@ -1982,6 +2037,12 @@
     // ============================================================
     //  UI（仿原生面板壳）
     // ============================================================
+    // 理解卡｜我拥有：字幕模式面板 ensurePanel（约 212 行 innerHTML 骨架）、字幕列表 renderList、
+    //   startSend 批量发送循环、切片对齐、全选/反选/范围选。
+    // 我承诺：批量发送前 confirm 展示「N 条字幕 → M 条弹幕」计数；逐条 sleep(sendInterval) 节流；取消即时生效。
+    // 我永不：confirm( 全仓白名单 3 处我占 1（check 门禁盯着，只减不增）。
+    // 改我前读：面板先挂 body（display:none）再由 99-main 搬进原生面板壳——document 级查询依赖这个顺序；
+    //   P3 我将被 gdm-panel 取代，别在我身上加新功能（RISKS R2 范围守门）。
 
     let panelEl = null;          // 我们的面板根节点
     let isOurView = true;        // 当前显示的是我们的 UI 还是原生编辑器
@@ -2453,6 +2514,12 @@
     // ============================================================
     //  弹幕模式（手动单条输入）
     // ============================================================
+    // 理解卡｜我拥有：switchPanelMode（预设/样式区 DOM 在两模式间搬移复用）、makeManualSub 虚拟字幕、
+    //   高级编辑全字段（TIMING_FUNCS 28 缓动 / readAdvancedConfig / renderMoves / exportAdvancedPreset）。
+    // 我承诺：单条与批量走同一条 expandSub → sendModel 管线（单发不是特例路径）。
+    // 我永不：不碰批量/时间轴发送（80-ui 的 startSend 职责）；syncAdvEnableUI 是状态双源补丁（病灶②存量），
+    //   P3 要消灭这个模式而不是复制它。
+    // 改我前读：P3 我并入 gdm-panel 成「简单模式」；预设区/样式区 DOM 节点是两模式共享的，动布局先想另一半。
 
     // 切换 字幕模式 / 弹幕模式（预设、样式区在两种模式间复用）
     function switchPanelMode(mode) {
@@ -2929,6 +2996,12 @@
     // ============================================================
     //  预设 UI 逻辑
     // ============================================================
+    // 理解卡｜我拥有：buildParamControl（参数控件生成器——schema 化的现有雏形，支持 select/color/checkbox/text/number）、
+    //   预设导入/导出/删除、开发面板全套（草稿持久化/预览/保存为预设）。
+    // 我承诺：导入校验只提醒不阻断（smoke #2 钉住）；导出不泄露内部字段（_origOptions 等，smoke #8）。
+    // 我永不：confirm( 白名单 3 处我占 2（删除预设/重置开发面板）；新增交互一律走内联确认，不再加 confirm。
+    // 改我前读：全仓最大模块（793 行）；P3 我被 schema 生成器 + store 范式取代（参照 svfeed settingspanel），
+    //   但 buildParamControl（尤其 color 类型）是迁移资产，别推倒重写。
 
     function refreshPresetSelect() {
         const sel = $('#cf-preset');
@@ -3722,6 +3795,10 @@
     // ============================================================
     //  事件绑定
     // ============================================================
+    // 理解卡｜我拥有：bindEvents()——全部 #cf-* 控件的事件绑定（含 14 个高级字段 input → readAdvancedConfig）。
+    // 我承诺：纯绑定无自建状态；尾部首次同步（updatePresetUI/syncAdvEnableUI/renderMoves）是面板初始态唯一来源。
+    // 我永不：不在绑定回调里写长段业务逻辑（调度回 80/85/90 的函数）。
+    // 改我前读：新增控件必须同步此处，漏绑 = 静默无反应（无报错）；P3 随组件函数走，本文件将被消灭。
 
     function bindEvents() {
         const p = ensurePanel();
@@ -3862,6 +3939,12 @@
     // ============================================================
     //  入口切换（替换式）
     // ============================================================
+    // 理解卡｜我拥有：装配点 init()（initPresets→injectStyle→ensurePanel→bindEvents→setupEntry，DOMContentLoaded 门控）、
+    //   约 130 行仿原生 CSS（injectStyle 单点注入）、入口按钮组、400ms 轮询（病灶③，全仓唯一 setInterval）。
+    // 我承诺：switchView 切换时显隐原生 navs/content（寄生替换式——P3 改为浮层共存，行为变更已立项）。
+    // 我永不：setInterval 白名单 1/1（P3 清零换 MutationObserver）；新样式只进 injectStyle 单点。
+    // 改我前读：面板注入依赖 .danmaku-g-launcher-panel 存在（原生面板壳）；SCRIPT_VERSION 读 GM_info；
+    //   文件末尾的 `})();` 收口整个 IIFE——拼接顺序变动会直接语法错误。
 
     function getNativePanel() { return $('.danmaku-g-launcher-panel'); }
 

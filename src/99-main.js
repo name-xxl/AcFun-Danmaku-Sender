@@ -1,6 +1,12 @@
     // ============================================================
     //  入口切换（替换式）
     // ============================================================
+    // 理解卡｜我拥有：装配点 init()（initPresets→injectStyle→ensurePanel→bindEvents→setupEntry，DOMContentLoaded 门控）、
+    //   约 130 行仿原生 CSS（injectStyle 单点注入）、入口按钮组、400ms 轮询（病灶③，全仓唯一 setInterval）。
+    // 我承诺：switchView 切换时显隐原生 navs/content（寄生替换式——P3 改为浮层共存，行为变更已立项）。
+    // 我永不：setInterval 白名单 1/1（P3 清零换 MutationObserver）；新样式只进 injectStyle 单点。
+    // 改我前读：面板注入依赖 .danmaku-g-launcher-panel 存在（原生面板壳）；SCRIPT_VERSION 读 GM_info；
+    //   文件末尾的 `})();` 收口整个 IIFE——拼接顺序变动会直接语法错误。
 
     function getNativePanel() { return $('.danmaku-g-launcher-panel'); }
 

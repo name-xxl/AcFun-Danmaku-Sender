@@ -4,6 +4,14 @@
     //  页面对象（player / H5Player）必须通过 unsafeWindow 访问，否则
     //  `instanceof window.H5Player` 会因 H5Player 为 undefined 而抛 TypeError。
     // ============================================================
+    // 理解卡｜我拥有：播放器封装（getPlayer/seekTo/playVideo…，unsafeWindow 沙箱桥）、全局可变状态
+    //   （subs/styleSource/timeOffset/advancedConfig…）、localStorage 存取（storeGet/storeSet，键前缀 cf_sub_）、
+    //   buildModel（构造与 A 站原生 getData 完全一致的 model）、ADJUSTABLE_FIELDS（类 schema 可调字段表）。
+    // 我承诺：buildModel 的字段集 = API.md §五 渲染端只读字段；全局状态的声明入口集中在此。
+    // 我永不：不发网络请求（60-network 的职责）；buildModel 不补 hack 字段（__seq/user 是 70-preview 的
+    //   预览期补丁，正式发送的 model 不带）。
+    // 改我前读：getPlayer 是宽松 duck-typing（跨 realm 不能 instanceof）；content 按码点截断 255；
+    //   新增全局状态必须想清楚持久化键名（cf_sub_*），旧键 = 旧版迁移依据（RISKS R5）。
 
     const pageWin = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
 

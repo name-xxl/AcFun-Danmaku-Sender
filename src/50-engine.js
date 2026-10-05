@@ -1,6 +1,14 @@
     // ============================================================
     //  预设引擎：把一条字幕按激活预设展开成多个弹幕 model
     // ============================================================
+    // 理解卡｜我拥有：五阶段预设引擎——STAGES(split/layout/color/timing/motion)、ENGINES 注册表、
+    //   params schema 辅助（pnum/psel/pcol/pchk/ptext）、PIPELINE_HOOKS、
+    //   expandSub/cfgFor/calcDurationMs（字幕 → model[] 的唯一入口，60-network 与 70-preview 都走它）。
+    // 我承诺：引擎注册即可用（开发面板按 params 自动渲染表单）；safeRun 兜底——引擎抛错/空结果回退单条原样；
+    //   预设参数 key 带阶段前缀防冲突（跨阶段联动的共享参数才用裸名）。
+    // 我永不：不做 DOM 构造（唯一例外：measureTextPx 的离屏 canvas 测宽）；不发网络请求。
+    // 改我前读：expandSub 的 seq/prevTime 是跨句衔接（KTV 双排/applySeqOffset）的生命线，别删；
+    //   timingFunction 只认 CSS 合法值（API.md §九，非法值 = 弹幕停在 (0,0)）；smoke #12–14 钉住大量行为，改引擎先跑门。
 
     function getAllPresets() { return BUILTIN_PRESETS.concat(customPresets); }
     function getActivePreset() {
