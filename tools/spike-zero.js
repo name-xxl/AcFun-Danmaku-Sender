@@ -19,7 +19,10 @@
     const say = (...a) => console.log('%c[spike-zero]', 'color:#fd4c5d;font-weight:bold;', ...a);
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const R = [];   // 结果登记：{id, name, status, detail}
-    const done = (id, status, detail) => { R.push({ id, status, detail }); say(`${status === 'PASS' ? '✅' : status === 'FAIL' ? '❌' : '⏭️'} ${id} ${status} —— ${detail}`); };
+    const done = (id, status, detail) => {
+        R.push({ id, status, detail: detail + ' ｜ ' + stageStats() });
+        say(`${status === 'PASS' ? '✅' : status === 'FAIL' ? '❌' : '⏭️'} ${id} ${status} —— ${detail}`);
+    };
 
     // —— 环境 ——
     const W = window;
@@ -67,13 +70,16 @@
     }
     function expire() { for (const m of refs) { if (m && typeof m.startTime === 'number') { m.startTime = Number.MAX_SAFE_INTEGER; m.durationTime = 0; } } }
 
-    // 时序（70-preview 实测踩坑版）：先暂停稳住渲染器时钟 → seek 到 t0 → 等 600ms → 注入 → play
+    // 时序（70-preview 实测踩坑版）：先暂停稳住渲染器时钟 → seek 到 t0 → 等 600ms → 注入 → play。
+    // 必须走 player.seek/play/pause（seek 单位是秒）；直接写 video.currentTime 播放器可能不理会，
+    // 弹幕时间窗永不激活、什么都不渲染（2026-10-05 首跑实测翻车点，对齐 40-core.js seekTo 口径）。
     async function injectAt(t0ms, models) {
-        video.pause();
-        video.currentTime = t0ms / 1000;
+        const sec = t0ms / 1000;
+        try { if (typeof player.pause === 'function') player.pause(); else video.pause(); } catch (e) {}
+        try { if (typeof player.seek === 'function') player.seek(sec); else video.currentTime = sec; } catch (e) { video.currentTime = sec; }
         await sleep(600);
         player.loadDanmakuG(models);
-        video.play();
+        try { if (typeof player.play === 'function') player.play(); else video.play(); } catch (e) {}
     }
 
     // model 构造（对齐 buildModel / API.md §五渲染端只读字段）
@@ -88,6 +94,15 @@
     function stageHit(marker) {
         const s = document.querySelector('.danmaku-g-rendered-stage');
         return !!(s && s.innerText && s.innerText.includes(marker));
+    }
+    // 渲染证据：stage 子节点数 + 可见文本 + 页面可见性。
+    // 渲染器是 RAF 驱动——页面处于后台时 RAF 冻结、什么都不渲染，此时的「未命中」不构成证据。
+    function stageStats() {
+        const s = document.querySelector('.danmaku-g-rendered-stage');
+        if (!s) return 'stage=none';
+        return 'stageNodes=' + s.querySelectorAll('*').length +
+            ' stageText=' + JSON.stringify((s.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 60)) +
+            ' pageVis=' + document.visibilityState;
     }
     const t0 = Math.max(0, Math.min((video.duration || 30) - 12, 20)) * 1000;   // 安全基准位（秒→毫秒）
 

@@ -19,6 +19,7 @@
 9. [渲染器机制（预览相关）](#九渲染器机制预览相关)
 10. [错误码](#十错误码)
 11. [其他弹幕接口](#十一其他弹幕接口)
+12. [Checkpoint Zero 实测（2026-10-05）](#十二checkpoint-zero-实测2026-10-05)
 
 ---
 
@@ -491,3 +492,35 @@ renderer.emit(FilterChanged, { key:'IsOwnDanmkau', enable:viewOwnDanmaku, func: 
 | `new-danmaku/report` | 举报弹幕 |
 | `new-danmaku/update` | 更新弹幕 |
 | `new-danmaku/is` | 弹幕状态查询 |
+
+---
+
+## 十二、Checkpoint Zero 实测（2026-10-05）
+
+P2 spike 干跑实证，工具：`tools/spike-zero.js`（控制台整段粘贴，零网络请求，只 `loadDanmakuG` 本地注入）。
+
+- 日期：2026-10-05；环境：ZCode 内置 Chromium 146（Electron 41），Windows 10 x64
+- 页面：`https://www.acfun.cn/v/ac48820714`（自有测试稿件，275s，1080P）
+- 登录：已登录 uid=51737407；`window.player` 就绪；`player.loadDanmakuG` 存在
+
+### 结论：注入链路实证通过（4.5/5），分支判定 = 走「官方渲染器彩排 = 默认画布」
+
+| # | 项 | 结论 | 证据 |
+|---|---|---|---|
+| T1 | 注入通道 | **通过**（自动） | 5 次注入全程无异常；渲染器为每个带 `animationFrames` 的 model 创建 DOM 节点 + 生成 `@keyframes` |
+| T2 | 身份过滤器 | **通过**（自动） | 原生面板展开态（`.advanced-danmaku-wrapper.unfold`）下注入被接受、节点照常生成；补 `user` 字段口径与 §九一致 |
+| T3 | extData 契约 | **通过**（坐标数学） | 静止段 keyframes `translate3d(238.75px,161.1px)` = (25%,30%)×955×537 **精确命中**；多段/缓动待上屏目视 |
+| T4 | scale 语义 | **待上屏确认**（唯一残留） | scale=2 节点 keyframes 显示 `scaleX(1)`——但缓冲骨架连 wordStyle 都未应用（fs=12px 默认），样式在冲刷出缓冲时才套用，此状态下不可判定 |
+| T5 | 移动轨迹 | **通过**（坐标数学） | keyframes from `(191px,268.5px)` → to `(764px,268.5px)` = (20%,50%)→(80%,50%) 精确命中，y 恒定（水平直线）|
+
+### 过程中发现的新机制（比结论更重要）
+
+1. **渲染器缓冲机制**：`loadDanmakuG` 注入的 model 先以骨架 DOM 节点入 stage（`data-is-buffer="true"` + class `danmaku-g-invisible`），挂 `animation-delay` 负值等时间窗；**冲刷上屏需要渲染器时钟推进**（RAF 驱动）。标签处于后台时 RAF 冻结 → 弹幕滞留缓冲、永不显示。**做彩排/预览必须要求标签前台可见**。
+2. **坐标换算 100% 精确**：百分比坐标 × 视频尺寸（getBoundingClientRect）的像素换算 8/8 全部精确吻合，§五 的 0–100 百分比口径未变。
+3. **seek 必须走 `player.seek(秒)`**：直接写 `video.currentTime` 播放器可能不理会，弹幕时间窗永不激活（首轮实测翻车点，对齐 40-core.js `seekTo`）。
+4. **缓冲骨架不套样式**：wordStyle（字号/字体/颜色）与帧级 scale 都不在骨架上（fs=12px 默认、scaleX 恒 1），**判定样式/scale 语义必须在冲刷上屏后看**，骨架状态下的「scaleX(1)」不构成口径变化的证据。
+5. `player.initAdvancedDanmaku()` 无参初始化可建渲染器，但**完整冲刷行为在面板展开态下验证最稳**。
+
+### 遗留：像素级目视确认（3 分钟自助）
+
+工具已内置自检（`pageVis` 不可见会标出）。找个空档：前台打开自己的稿件 → 控制台粘贴 `tools/spike-zero.js` 全文 → 按画面核对 5 组标记（三锚点/面板开着可见/缓动平滑/字号翻倍/左→右匀速）。scale=2 是否真比 scale=1 大一倍是唯一待判定项。
