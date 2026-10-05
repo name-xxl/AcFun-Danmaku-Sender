@@ -524,3 +524,14 @@ P2 spike 干跑实证，工具：`tools/spike-zero.js`（控制台整段粘贴�
 ### 遗留：像素级目视确认（3 分钟自助）
 
 工具已内置自检（`pageVis` 不可见会标出）。找个空档：前台打开自己的稿件 → 控制台粘贴 `tools/spike-zero.js` 全文 → 按画面核对 5 组标记（三锚点/面板开着可见/缓动平滑/字号翻倍/左→右匀速）。scale=2 是否真比 scale=1 大一倍是唯一待判定项。
+
+### §十二附录：渲染器内部机制逆向（2026-10-05 深挖，P3 彩排设计依据）
+
+渲染器实例可通过 `player.$plugins` 动态定位（找含 `loadDanmakuG` 方法的插件，取其 `.renderer`；**下标不固定**，勿写死）。已解码（压缩源码直读）：
+
+1. **`tick(n)` 单调门**：`if (!(n < _time) && timer.status !== Ended)` ——**seek 往回跳后 n < _time，整帧跳过**，直到视频播过陈旧 _time 才恢复。回跳后想立即渲染必须手动重置 `_time`（或渲染器重建）。
+2. **`pool.timeFrame(n)`**：`danmakus.filter(n > startTime && n <= startTime + durationTime).slice(0,2000)` —— 起点严格大于（startTime 当帧不算数）。
+3. **`needRender` 的死亡标记**：任何一次窗口外检查（含「还没到点」`r < startTime`）都会把 `renderStatus` 永久置为 `Rendered`，之后永远不再渲染。**因此注入的弹幕必须在入池时已到期**（startTime < 当前视频时间），否则入池即处死。原生 preview 通道「startTime 强制归零」正是绕开这一点的官方做法。
+4. **DOM 双路径**：`createDanmakuDom` 里 id 匹配 preview 正则的走**直接渲染**（无缓冲、`danmaku-g-preview` 类）；其余进 `danmakuBuffer` 骨架（上限 `danmakuBufferSize=20`，**永不清理**）。骨架期无文本、无样式（fs=12px 默认），样式在 render 时套用——骨架状态判不了 scale/wordStyle。
+5. **注入链路实证**：`loadDanmakuG` → 池 ✓（renderStatus 初始 null）→ 手动 `renderer.tick(视频毫秒)` → renderSet ✓（size=2）。即：**池与渲染集机制全部可用，最终 CSS 类切换（invisible→可见）已通到最后一环**；上屏瞬间目视与 scale 倍率确认留待 30 秒人工核验。
+6. **P3 彩排设计守则**（由 1–3 推出）：逐句「到点即注」（彩排本义）；前跳用 70-preview 时序（注入时已在窗内，天然合法）；**回跳必须先重置 `renderer._time`**；可用 `renderer.tick(视频毫秒)` 做驱动兜底。
