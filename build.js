@@ -1,12 +1,12 @@
-// 构建脚本：把 src/ 下的源文件按顺序拼接成 dist/acfun-danmaku-sender.user.js
+// 构建脚本：把 src/ 下的源文件按顺序拼接成 dist/acfun-adl.user.js
 // 用法：node build.js
 const fs = require('fs');
 const path = require('path');
 
 const SRC_DIR = path.join(__dirname, 'src');
-const DIST_FILE = path.join(__dirname, 'dist', 'acfun-danmaku-sender.user.js');
+const DIST_FILE = path.join(__dirname, 'dist', 'acfun-adl.user.js');
 
-// 顺序即最终脚本的拼接顺序，必须与 tools/split.js 的 PARTS 保持一致。
+// 顺序即最终脚本的拼接顺序（单闭包拼接，依赖必须先定义后使用）。
 const FILES = [
     '00-header.js',
     '10-constants.js',

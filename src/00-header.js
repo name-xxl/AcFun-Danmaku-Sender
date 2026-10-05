@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         AcFun 弹幕字幕发送器 (H5版高级弹幕)
-// @namespace    https://github.com/acfun-danmaku-sender
-// @version      6.5.1
-// @description  上传 SRT/ASS/LRC 字幕文件，按时间轴自动发送高级弹幕。仿原生面板，替换 A 站高级弹幕编辑器并提供视频预览。
+// @name         AcFun 高级弹幕层编辑器 (ADL)
+// @namespace    https://github.com/acfun-adl
+// @version      6.6.0
+// @description  视频的高级弹幕层编辑器：给视频加一条可发布的字幕/特效轨道，所见即所得，发送只是导出。导入 SRT/ASS/LRC，预设特效，彩排通过才可导出。
 // @author       name_xxl
 // @match        *://www.acfun.cn/v/ac*
 // @match        *://www.acfun.cn/bangumi/aa*

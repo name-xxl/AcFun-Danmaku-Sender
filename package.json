@@ -1,7 +1,7 @@
 {
-  "name": "acfun-danmaku-sender",
-  "version": "6.5.1",
-  "description": "上传 SRT/ASS/LRC 字幕文件，按时间轴自动发送 A 站高级弹幕的油猴脚本",
+  "name": "acfun-adl",
+  "version": "6.6.0",
+  "description": "视频的高级弹幕层编辑器——给视频加一条可发布的字幕/特效轨道，所见即所得，发送只是导出",
   "scripts": {
     "build": "node build.js"
   },
