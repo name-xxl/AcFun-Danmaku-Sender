@@ -2,17 +2,31 @@
     //  入口切换（替换式）
     // ============================================================
     // 理解卡｜我拥有：装配点 init()（initPresets→injectStyle→ensurePanel→bindEvents→setupEntry，DOMContentLoaded 门控）、
-    //   约 155 行仿原生 CSS（injectStyle 单点注入，含闸④ 台账浮层）、入口按钮组、400ms 轮询（病灶③，全仓唯一 setInterval）。
+    //   约 155 行仿原生 CSS（injectStyle 单点注入，含闸④ 台账浮层）、入口按钮组、
+    //   等原生面板壳出现的 MutationObserver（6.18.0：病灶③ 的 400ms 轮询已清零，策略在 15-shell-watch.js）。
     // 我承诺：switchView 切换时显隐原生 navs/content（寄生替换式——P3 改为浮层共存，行为变更已立项）。
-    // 我永不：setInterval 白名单 1/1（P3 清零换 MutationObserver）；新样式只进 injectStyle 单点。
+    // 我永不：**定时器**（6.18.0 起全仓 setInterval = 0 处，tools/check.mjs 的守卫上限已从 1 收到 0，
+    //   没有再涨的余地）；新样式只进 injectStyle 单点。
+    //   ——代价（换掉轮询换来什么、又押上了什么）：稳态回调零查询、壳重建能自愈；但「壳什么时候出现」
+    //   从此由 DOM 变动驱动而非定时兜底，真机时序未验，取舍与假设逐条写在 RELEASE_NOTES 6.18.0 的
+    //   「已知边界」里（首要一条：观察目标 #danmaku 若被整体替换，观察器会静默失效）。
     // 改我前读：面板注入依赖 .danmaku-g-launcher-panel 存在（原生面板壳）；SCRIPT_VERSION 读 GM_info；
+    //   「等壳出现」的判据（幂等 / 早退 / 壳重建 / 展开边沿）全在 15-shell-watch.js，本文件只提供
+    //   五个依赖与观察目标；观察器挂在 #danmaku —— 实测原生 DOM 是
+    //   #danmaku > .advanced-danmaku-wrapper > .danmaku-launcher-container > .danmaku-g-launcher-panel-wrapper
+    //   > .danmaku-g-launcher-panel，壳只可能在 #danmaku 里出现/重建；#danmaku 取不到时退到 document.body；
     //   6.8.0 起 IIFE 外壳由 build.js 的 banner/footer 提供，本文件不再是收口点（原 `})();` 已删）。
 
 import { $, log, status } from './20-utils.js';
+import { createShellWatch } from './15-shell-watch.js';
 import { getPlayer } from './40-core.js';
 import { initPresets } from './50-engine.js';
 import { ensurePanel, getDefaultNative, isOurView, setDefaultNative, setIsOurView } from './80-ui.js';
 import { bindEvents } from './95-events.js';
+
+    // 观察器句柄（15-shell-watch 的策略函数是纯的，观察器本体在这里创建）：
+    // 浏览器会因「仍在观察」保住它，但不依赖这条实现细节——setupEntry 里把它挂在这里，别落进 GC 射程。
+    let entryObserver = null;
 
     function getNativePanel() { return $('.danmaku-g-launcher-panel'); }
 
@@ -74,8 +88,6 @@ import { bindEvents } from './95-events.js';
     }
 
     function setupEntry() {
-        let wasUnfold = false;
-
         // 面板从折叠变展开的边沿：注入入口 + 按默认设置决定视图
         function onLauncherOpen() {
             log('🔔 检测到高级弹幕面板展开');
@@ -84,24 +96,35 @@ import { bindEvents } from './95-events.js';
             else { log('⚠️ 未找到 .danmaku-g-launcher-panel'); }
         }
 
+        // 等壳出现 / 重建 → 注入入口。策略（幂等 / O(1) 早退 / 壳重建 / 展开边沿）全在 15-shell-watch.js，
+        // 这里只给五个依赖：找壳、判「已注入」、注入动作、读展开态、展开边沿做什么。
+        const watch = createShellWatch({
+            findShell: getNativePanel,
+            // 判据与 injectNativeEntry 内部同源（都在标题栏下找 #cf-entry-group），这里放宽到整个壳
+            isInjected: (native) => !!native.querySelector('#cf-entry-group'),
+            inject: injectNativeEntry,
+            isLauncherOpen,
+            launcherWrapperClass: 'advanced-danmaku-wrapper',
+            onLauncherOpen,
+        });
+
+        // 玩家事件：与观察器共用同一份展开记忆（一处分叉就会重复处理同一次展开）
         const p = getPlayer();
         if (p && p.on) {
-            p.on('openDanmakuGLauncher', () => { wasUnfold = true; onLauncherOpen(); });
-            p.on('closeDanmakuGLauncher', () => { wasUnfold = false; });
+            p.on('openDanmakuGLauncher', () => watch.opened());
+            p.on('closeDanmakuGLauncher', () => watch.closed());
         }
 
-        // 主机制：持续轮询（比事件/观察器都可靠，不失效）
-        setInterval(() => {
-            const native = getNativePanel();
-            if (native) injectNativeEntry(native);   // 只要面板在 DOM 就注入按钮
-            const open = isLauncherOpen();
-            if (open && !wasUnfold) {
-                wasUnfold = true;
-                onLauncherOpen();
-            } else if (!open) {
-                wasUnfold = false;
-            }
-        }, 400);
+        // 主机制：事件驱动（6.18.0 替掉 400ms 轮询）。观察目标取 #danmaku（原生面板壳的宿主区，
+        // 见理解卡里的实测 DOM 链）——它是能包住壳的最窄的稳定容器；取不到时（别的页面形态）
+        // 退到 document.body，那时的代价是**整页**的节点增删与 class 变动都会进回调。
+        // 回调的闸门在 15-shell-watch.js：与本片无关的批次直接返回、稳态（入口已注入 + 壳在树上）
+        // 零查询——所以上面的代价只是空转的微任务，不是重复查找与重复注入。
+        const target = $('#danmaku') || document.body;
+        entryObserver = new MutationObserver(watch.sweep);
+        entryObserver.observe(target, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+
+        watch.sweep([]);     // 立即巡检一次：@run-at document-idle 下壳可能已经在了
 
         log('✅ 入口已就绪：点第三个按钮（高级弹幕）展开编辑器，标题栏“高级弹幕”旁即切换入口');
     }
@@ -290,6 +313,36 @@ import { bindEvents } from './95-events.js';
         #cf-ledger-panel .cf-lg-btn{border:1px solid #999;background:#f4f4f4;color:#666;border-radius:3px;padding:0 10px;font-size:12px;height:24px;line-height:16px;cursor:pointer;flex:none}
         #cf-ledger-panel .cf-lg-btn:hover{background:#e5e5e5}
         #cf-ledger-panel .cf-lg-btn.armed{background:#fff1f0;border-color:#f5222d;color:#f5222d}
+        /* 作品视图（gdm-work-ui.openWorkPanel；外壳复用 .cf-dev-panel-mask/.cf-dev-dlg。
+           全部选择器前缀 #cf-work-panel：浮层挂在 body 上，拿不到 #cf-sub-panel 的那套样式） */
+        #cf-work-panel *{box-sizing:border-box}
+        #cf-work-panel .cf-wk-dlg{width:600px}
+        #cf-work-panel .cf-wk-stats{font-size:11px;color:#999;padding:0 14px 8px;line-height:1.5;word-break:break-all}
+        #cf-work-panel .cf-wk-stats.bad{color:#f5222d}
+        #cf-work-panel .cf-wk-body{flex:1;overflow-y:auto;padding:0 14px 10px;display:flex;flex-direction:column;gap:8px}
+        #cf-work-panel .cf-wk-empty{text-align:center;color:#999;font-size:12px;padding:26px 10px;line-height:1.9}
+        #cf-work-panel .cf-wk-item{border:1px solid #e5e5e5;border-radius:4px;padding:8px 10px;flex:none}
+        #cf-work-panel .cf-wk-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+        #cf-work-panel .cf-wk-name{flex:1;min-width:0;font-size:13px;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        #cf-work-panel .cf-wk-badge{flex:none;font-size:11px;border-radius:2px;padding:0 5px;line-height:16px;white-space:nowrap;background:#fffbe6;color:#faad14;border:1px solid #ffe58f}
+        #cf-work-panel .cf-wk-badge.done{background:#f6ffed;color:#52c41a;border-color:#b7eb8f}
+        #cf-work-panel .cf-wk-meta{font-size:11px;color:#999;line-height:1.6;margin-bottom:6px}
+        #cf-work-panel .cf-wk-link{color:#409bef;text-decoration:none;font-family:monospace}
+        #cf-work-panel a.cf-wk-link:hover{text-decoration:underline}
+        #cf-work-panel .cf-wk-acts{display:flex;gap:6px;flex-wrap:wrap}
+        #cf-work-panel .cf-wk-btn{border:1px solid #999;background:#f4f4f4;color:#666;border-radius:3px;padding:0 10px;font-size:12px;height:24px;line-height:16px;cursor:pointer;flex:none}
+        #cf-work-panel .cf-wk-btn:hover{background:#e5e5e5}
+        #cf-work-panel .cf-wk-btn.cf-wk-primary{background:#409bef;border-color:#409bef;color:#fff}
+        #cf-work-panel .cf-wk-btn.cf-wk-primary:hover{background:#2f86d8}
+        #cf-work-panel .cf-wk-btn.cf-wk-danger{color:#f5222d;border-color:#ffa39e}
+        #cf-work-panel .cf-wk-btn.armed{background:#fff1f0;border-color:#f5222d;color:#f5222d}
+        #cf-work-panel .cf-wk-nameinput{flex:1;min-width:0;height:24px;border:1px solid #e5e5e5;border-radius:3px;padding:0 6px;font-size:13px;color:rgba(0,0,0,.65);outline:none;font-family:inherit}
+        #cf-work-panel .cf-wk-nameinput:focus{border-color:#409bef}
+        #cf-work-panel .cf-wk-saverow{padding:0 14px 10px}
+        #cf-work-panel .cf-wk-saverow-inner{display:flex;gap:6px;align-items:center;background:#fafafa;border:1px solid #f0f0f0;border-radius:4px;padding:8px}
+        #cf-work-panel .cf-wk-saverow-inner input{flex:1;min-width:0;height:24px;border:1px solid #e5e5e5;border-radius:3px;padding:0 6px;font-size:12px;color:rgba(0,0,0,.65);outline:none;font-family:inherit}
+        #cf-work-panel .cf-wk-saverow-inner input:focus{border-color:#fd4c5d}
+        #cf-work-panel .cf-wk-saverow-inner select{flex:0 0 auto;height:24px;max-width:190px;border:1px solid #e5e5e5;border-radius:3px;font-size:12px;color:rgba(0,0,0,.65);background:#fff;padding:0 4px;outline:none}
         `;
         document.head.appendChild(S);
     }

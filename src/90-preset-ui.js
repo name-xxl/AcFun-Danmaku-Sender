@@ -10,7 +10,7 @@
     //   两处渲染重建容器前都要 clearParamSubscriptions，别让上一轮的订阅活过重建。
     //   P3 本模块被 schema 生成器 + store 范式取代（参照 svfeed settingspanel）。
 
-import { BUILTIN_PRESETS, DEFAULT_PRESET_OPTIONS } from './10-constants.js';
+import { BUILTIN_PRESETS, DEFAULT_PRESET_OPTIONS, WORK_FILE_TYPE } from './10-constants.js';
 import { $, escapeHtml, genId, getByPath, paramTarget, setByPath, status } from './20-utils.js';
 import { parseSub } from './30-parser.js';
 import {
@@ -428,6 +428,15 @@ import {
             try {
                 const data = JSON.parse(r.result);
                 const arr = Array.isArray(data) ? data : [data];
+                // 拿作品文件来导预设（6.17.0）：**明确拒绝，不静默半成功**。作品文件的形状里没有 id/name
+                // 之外的预设字段，若走下面的循环会被逐条 `continue` 掉、最后报「已导入 0 个预设」——
+                // 用户只会以为文件坏了。作品文件的判别键是 type:'adl-work'（gdm-work 的 workPrepare 同源，
+                // 字面量在 10-constants 单点声明）。
+                if (arr.some((p) => p && typeof p === 'object' && p.type === WORK_FILE_TYPE)) {
+                    status('⚠️ 这是作品文件（type: "adl-work"），不是预设 JSON：作品请用面板的「📁 作品 → 📥 导入作品」载入；'
+                        + '预设导入只认带 id/name/options/params 的预设 JSON。', 'err');
+                    return;
+                }
                 let n = 0;
                 const warns = [];
                 for (const p of arr) {
@@ -761,10 +770,12 @@ import {
 // —— ESM 导出（6.8.0 迁移）——
 export {
     deleteCurrentPreset, downloadJson, exportAllPresets, exportCurrentPreset, importPreset, loadPresetFile,
-    loadSub2File, onPresetChange, openDevPanel, openExportDialog, restoreActivePresetOptions,
-    saveActivePresetOptions, syncAdvEnableUI, updatePresetUI,
+    loadSub2File, onPresetChange, openDevPanel, openExportDialog, refreshPresetSelect,
+    restoreActivePresetOptions, saveActivePresetOptions, syncAdvEnableUI, updatePresetUI,
 };
 // downloadJson 6.15.0 起对外（闸④ 台账视图 gdm-ledger-ui 复用它导出台账 JSON）：JSON 下载只有这一份实现。
+// refreshPresetSelect 6.17.0 起对外（作品视图 gdm-work-ui 载入作品后要把预设下拉与预设区画回新状态）：
+// 「状态 → 预设控件」的回写点只有这一处，别在 gdm-work-ui 里再写一份。
 // 仅供冒烟测试（smoke #1–8 预设校验/导出/草稿还原）：不对其它 src 模块开放
 // （activeEngineParamKeys / filterOptionsByKeys 6.10.0 随 gdm-form 迁出，冒烟测试改从该模块取）
 export {

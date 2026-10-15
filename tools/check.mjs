@@ -6,7 +6,9 @@
 //      （按真实依赖图判定，比原来的清单比对更强）；「单源」问题随之消失。
 //   ② 「版本三处一致」保留，但断言对象变了：产物 @version 由 build.js 从 package.json 生成，
 //      「只改一处」的漂移已不可能，这里改为校验【产物 ↔ package.json ↔ RELEASE_NOTES】三者对齐。
-//   ③ 「禁模式守门」保留原样：confirm/alert ≤3、setInterval ≤1，白名单只减不增（P3 重写时逐步清零）。
+//   ③ 「禁模式守门」保留原样：confirm/alert ≤3、setInterval ≤0，白名单只减不增。
+//      6.18.0 把 setInterval 的上限从 1 收到 0（boot.js 的 400ms 轮询换成 MutationObserver）——
+//      这条守卫的「终值」就是这么到位的：上一处清零 = 上限跟着清零，不留「还允许一处」的空档。
 //
 // 另外两条守门在别的文件，各管一件事：
 //   check-scope.mjs —— 引用完整性（缺 import / 幽灵导入）
@@ -39,10 +41,10 @@ const notes = fs.readFileSync(path.join(ROOT, 'RELEASE_NOTES.md'), 'utf8');
 if (!notes.includes(pkg.version)) fail('RELEASE_NOTES.md 未包含当前版本号 ' + pkg.version);
 else ok('RELEASE_NOTES.md 含当前版本号');
 
-// ② 禁模式守门：上限=现存白名单数量，只减不增
+// ② 禁模式守门：上限=现存白名单数量，只减不增（setInterval 已在 6.18.0 收到 0：定时器不许再出现）
 const LIMITS = [
     { re: /confirm\(|alert\(/g, max: 3, label: 'confirm(/alert(' },
-    { re: /setInterval\(/g, max: 1, label: 'setInterval(' },
+    { re: /setInterval\(/g, max: 0, label: 'setInterval(' },
 ];
 const srcFiles = fs.readdirSync(SRC).filter((f) => f.endsWith('.js'));
 for (const { re, max, label } of LIMITS) {

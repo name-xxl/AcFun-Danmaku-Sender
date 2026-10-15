@@ -31,6 +31,14 @@
     const DEFAULT_SHADOW_PLACEHOLDER = { x: 1, y: 1, blur: 3, color: '#000000' };   // 投影开启时的占位默认
     const DEFAULT_SHINE_PLACEHOLDER = { blur: 5, size: 2, color: '#ffd700' };       // 外发光开启时的占位默认
 
+    // —— 作品文件的类型标识（6.17.0 作品文件）——
+    // 声明在这里而不是 gdm-work.js，是因为它有两个消费方：gdm-work 的校验（workPrepare 要求
+    // type === WORK_FILE_TYPE）与 90-preset-ui 的导入器（loadPresetFile 据它把「拿作品文件导预设」
+    // 拦成明确报错而不是静默「已导入 0 个预设」）。两处各写一份字面量就会漂成两个真源。
+    // 值刻意与预设文件的形状（{id,name,options,params} 或它们的数组，无 type）不重叠——
+    // 导入时的类型判别就靠这一个键（见 gdm-work 的 workImportText）。
+    const WORK_FILE_TYPE = 'adl-work';
+
     // —— 视频身份三态（6.16.0 身份感知）——
     // 判定与取数在 60-network 的 videoIdentity（读 window.videoInfo 的作者 id，与 getUid() 归一后比对）；
     // 阈值映射在 55-audit 的 confirmThresholdFor。三态标识与显示名放这里，是因为三方（判定 / 阈值 / UI）
@@ -99,6 +107,6 @@ export {
     DEFAULT_POS_X, DEFAULT_POS_Y, DEFAULT_PRESET_OPTIONS, DEFAULT_SHADOW_PLACEHOLDER,
     DEFAULT_SHINE_PLACEHOLDER, DEFAULT_ZINDEX, FONTS, FONT_LABELS,
     IDENTITY_LABELS, IDENTITY_OTHER, IDENTITY_SELF, IDENTITY_UNKNOWN,
-    KTV_SUNG_COLOR, KTV_UNSUNG_COLOR, MAX_DURATION, MODEL_SEND_INTERVAL,
+    KTV_SUNG_COLOR, KTV_UNSUNG_COLOR, MAX_DURATION, MODEL_SEND_INTERVAL, WORK_FILE_TYPE,
 };
 

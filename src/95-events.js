@@ -2,7 +2,8 @@
     //  事件绑定
     // ============================================================
     // 理解卡｜我拥有：bindEvents()——面板壳与区块级按钮/控件的事件绑定（文件/列表/预设/样式/发送）。
-    //   闸④ 台账入口（#cf-ledger-btn → gdm-ledger-ui.openLedgerPanel）也在这里绑。
+    //   闸④ 台账入口（#cf-ledger-btn → gdm-ledger-ui.openLedgerPanel）、作品入口
+    //   （#cf-work-btn → gdm-work-ui.openWorkPanel，6.17.0）也在这里绑。
     // 我承诺：纯绑定无自建状态；尾部首次同步（updatePresetUI/syncAdvEnableUI/renderMoves）是面板初始态唯一来源。
     // 我永不：不在绑定回调里写长段业务逻辑（调度回 80/85/90 的函数）。
     // 改我前读：新增控件必须同步此处，漏绑 = 静默无反应（无报错）；**例外是高级编辑区**——它的 17 个控件
@@ -33,6 +34,7 @@ import {
     syncAdvEnableUI, updatePresetUI,
 } from './90-preset-ui.js';
 import { openLedgerPanel } from './gdm-ledger-ui.js';
+import { openWorkPanel } from './gdm-work-ui.js';
 
     function bindEvents() {
         const p = ensurePanel();
@@ -49,6 +51,7 @@ import { openLedgerPanel } from './gdm-ledger-ui.js';
         $('#cf-send').addEventListener('click', startSend);
         $('#cf-verify').addEventListener('click', verifySent);
         $('#cf-ledger-btn').addEventListener('click', openLedgerPanel);   // 闸④ 台账视图（gdm-ledger-ui）
+        $('#cf-work-btn').addEventListener('click', openWorkPanel);       // 作品视图（gdm-work-ui，6.17.0）
         $('#cf-reset').addEventListener('click', resetAll);
         $('#cf-preview-all').addEventListener('click', previewAll);
         $('#cf-offline-preview').addEventListener('change', (e) => {

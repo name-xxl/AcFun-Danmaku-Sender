@@ -5,7 +5,9 @@
     //   startSend 批量发送循环、切片对齐、全选/反选/范围选、闸③ 的常驻计数行（#cf-audit）与**身份行**
     //   （#cf-identity，6.16.0：三态文案 + 他人视频的常驻提示）、大批量二次确认（confirmHighVolume）、
     //   闸② 的拒绝落点（startSend 里调 55-audit 的 auditSend）、闸④ 台账入口按钮（#cf-ledger-btn——
-    //   只是入口，视图与全部逻辑在 gdm-ledger-ui / gdm-ledger）。
+    //   只是入口，视图与全部逻辑在 gdm-ledger-ui / gdm-ledger）、作品入口按钮（#cf-work-btn，6.17.0——
+    //   同样只是入口，视图在 gdm-work-ui、数据在 gdm-work）、状态回写 refreshEditorFromState（作品载入后
+    //   把状态画回控件，见该函数旁的理由）。
     // 我承诺：批量发送前 confirm 展示「N 条字幕 → M 条弹幕」计数；发送前先过 auditSend（有病灶即拒绝）；
     //   超过阈值的批次走内联二次确认（倒计时可撤），**阈值按身份取**（他人视频收紧，见 55-audit
     //   confirmThresholdFor，发送前那一刻重取身份）；逐条 sleep(sendInterval) 节流；取消即时生效；
@@ -19,7 +21,7 @@
     //   P3 我将被 gdm-panel 取代，别在我身上加新功能（RISKS R2 范围守门）。
 
 import { ANCHORS, DEFAULT_DURATION, FONTS, FONT_LABELS, IDENTITY_LABELS, IDENTITY_OTHER, IDENTITY_UNKNOWN, MAX_DURATION, MODEL_SEND_INTERVAL } from './10-constants.js';
-import { $, escapeHtml, fmt, log, rgbToHex, sleep, status } from './20-utils.js';
+import { $, $$, escapeHtml, fmt, log, rgbToHex, sleep, status } from './20-utils.js';
 import { parseSub } from './30-parser.js';
 import {
     activePresetId, bilingualMode, cancelled, currentStyleConfig, getVideoInfo,
@@ -175,6 +177,7 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
                 <button type="button" class="cf-btn cf-btn-p" id="cf-send">▶ 发送全部</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-verify">🔍 验证已发</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-ledger-btn" title="闸④ 台账：本次及以往发送成功的弹幕逐条记录（时间 / 内容 / danmakuId / 视频），可回查、可导出、可引导手动清理（本工具删不了弹幕）">📋 台账</button>
+                <button type="button" class="cf-btn cf-btn-b" id="cf-work-btn" title="作品：把「正在编辑的这一件东西」存下来（字幕 / 样式 / 偏移 / 激活预设与参数），可存多件、可导出/导入 JSON。彩排标志本片恒为「未彩排」——未彩排不许发送是闸①（下一片）的事">📁 作品</button>
                 <label class="cf-interval">发送间隔
                     <input type="number" id="cf-interval" min="0" max="60000" step="100" value="${sendInterval}"> ms
                 </label>
@@ -677,6 +680,35 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
         if (el) el.value = timeOffset;
     }
 
+    // 把「当前状态」回写到面板控件上（6.17.0 作品载入的 UI 收敛点）：字幕列表 / 计数 / 样式控件
+    // （#cf-font…） / 样式来源 / 时间偏移 / 双语行 / 计数行。
+    // 为什么需要它：样式控件只在 ensurePanel 建面板时按初值写一次，别处没有第二个「状态 → 控件」回写点；
+    // 作品载入是第一个真需要回写的场景。预设侧的回写在 90-preset-ui 的 refreshPresetSelect（那边同样
+    // 只在切换预设时写一次），故载入作品的完整回写 = 本函数 + refreshPresetSelect，**别在别处再写第三份**。
+    function refreshEditorFromState() {
+        renderList();
+        syncTimeOffsetInput();
+        const setVal = (sel, v) => { const el = $(sel); if (el) el.value = v; };
+        const setChk = (sel, v) => { const el = $(sel); if (el) el.checked = !!v; };
+        setVal('#cf-font', currentStyleConfig.font);
+        setVal('#cf-size', currentStyleConfig.size);
+        setVal('#cf-color', rgbToHex(currentStyleConfig.color));
+        setVal('#cf-posx', currentStyleConfig.posX);
+        setVal('#cf-posy', currentStyleConfig.posY);
+        setChk('#cf-bold', currentStyleConfig.bold);
+        setChk('#cf-stroke', currentStyleConfig.stroke);
+        setChk('#cf-shadow', currentStyleConfig.shadow);
+        setVal('#cf-style-source', styleSource);
+        const anchorEl = $('#cf-anchor');
+        if (anchorEl) {
+            $$('.cf-anchor-cell', anchorEl).forEach((c) => c.classList.toggle('sel', +c.dataset.v === currentStyleConfig.anchor));
+        }
+        const bRow = $('#cf-bilingual-row');
+        if (bRow) bRow.style.display = subs.some((s) => s.main != null && s.sub != null) ? '' : 'none';
+        updateCnt();
+        updateSendAudit();
+    }
+
     // 切片模式：偏移 = 首条选中字幕开始时间的负值
     function applySliceOffset() {
         if (!sliceMode) return;
@@ -708,9 +740,9 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
 
 // —— ESM 导出（6.8.0 迁移）——
 export {
-    applySliceOffset, ensurePanel, getDefaultNative, isOurView, loadFile, panelMode, removeSubs,
-    resetAll, selectByRange, selectRange, setDefaultNative, startSend, toggleFold, togglePresetFold,
-    toggleSliceMode, toggleStyleFold, updateCnt, updateSendAudit,
+    applySliceOffset, ensurePanel, getDefaultNative, isOurView, loadFile, panelMode, refreshEditorFromState,
+    removeSubs, resetAll, selectByRange, selectRange, setDefaultNative, startSend, toggleFold,
+    togglePresetFold, toggleSliceMode, toggleStyleFold, updateCnt, updateSendAudit,
 };
 // 跨文件写：ESM 导入绑定只读，故本文件的两个模块级 let 走 setter（声明留原地，初始化未改）
 export function setIsOurView(v) { isOurView = v; }
