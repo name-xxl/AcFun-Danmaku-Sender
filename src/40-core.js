@@ -6,7 +6,8 @@
     // ============================================================
     // 理解卡｜我拥有：播放器封装（getPlayer/seekTo/playVideo…，unsafeWindow 沙箱桥）、全局可变状态
     //   （subs/styleSource/timeOffset/advancedConfig…）、localStorage 存取（storeGet/storeSet，键前缀 cf_sub_）、
-    //   buildModel（构造与 A 站原生 getData 完全一致的 model）、ADJUSTABLE_FIELDS（类 schema 可调字段表）。
+    //   buildModel（构造与 A 站原生 getData 完全一致的 model）、ADJUSTABLE_FIELDS（可调字段表——
+    //   6.12.0 起由 35-adv-fields 的统一声明派生，本文件只做投影，不改内容）。
     // 我承诺：buildModel 的字段集 = API.md §五 渲染端只读字段；全局状态的声明入口集中在此。
     // 我永不：不发网络请求（60-network 的职责）；buildModel 不补 hack 字段（__seq/user 是 70-preview 的
     //   预览期补丁，正式发送的 model 不带）。
@@ -18,6 +19,7 @@ import {
     DEFAULT_SHADOW_PLACEHOLDER, DEFAULT_SHINE_PLACEHOLDER, DEFAULT_ZINDEX, FONTS,
 } from './10-constants.js';
 import { genId, rgbToHex } from './20-utils.js';
+import { ADV_FIELDS } from './35-adv-fields.js';
 
     const pageWin = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
 
@@ -175,26 +177,18 @@ import { genId, rgbToHex } from './20-utils.js';
     const DEFAULT_ADVANCED_CONFIG = JSON.parse(JSON.stringify(advancedConfig));
 
     // ============================================================
-    //  可调字段定义表：导出「高级弹幕预设」时勾选哪些字段进入 params 声明。
-    //  key 用点路径指向 effects 的叶子字段（导入后 renderPresetParams 据此读写）。
+    //  可调字段表（勾选层 / 导出 params 用）：**由 35-adv-fields 的统一声明派生**，本文件不再手写第二份。
+    //  6.12.0 前它是 14 条手写 entry，与 80-ui 手写表单里的同一批字段各写一遍（同一批字段两处声明）。
+    //  派生只做投影（去掉编辑区专用的 ui 槽），key 顺序即勾选层分组序，一条不动。
     //  default 兜底：effects 里某子对象为 null 时，控件显示默认值。
     // ============================================================
-    const ADJUSTABLE_FIELDS = [
-        { key: 'effects.zIndex', label: '层级', group: '层级', type: 'number', min: 1, max: 99, step: 1, default: DEFAULT_ZINDEX },
-        { key: 'effects.rotate.x', label: '旋转 X°', group: '旋转', type: 'number', min: -360, max: 360, step: 1, default: 0 },
-        { key: 'effects.rotate.y', label: '旋转 Y°', group: '旋转', type: 'number', min: -360, max: 360, step: 1, default: 0 },
-        { key: 'effects.rotate.z', label: '旋转 Z°', group: '旋转', type: 'number', min: -360, max: 360, step: 1, default: 0 },
-        { key: 'effects.scale.x', label: '缩放 X', group: '缩放', type: 'number', min: 0.1, max: 5, step: 0.1, default: 1 },
-        { key: 'effects.scale.y', label: '缩放 Y', group: '缩放', type: 'number', min: 0.1, max: 5, step: 0.1, default: 1 },
-        { key: 'effects.blur', label: '模糊(px)', group: '模糊', type: 'number', min: 0, max: 50, step: 0.5, default: 0 },
-        { key: 'effects.shadow.x', label: '投影 X', group: '投影', type: 'number', min: -100, max: 100, step: 1, default: DEFAULT_SHADOW_PLACEHOLDER.x },
-        { key: 'effects.shadow.y', label: '投影 Y', group: '投影', type: 'number', min: -100, max: 100, step: 1, default: DEFAULT_SHADOW_PLACEHOLDER.y },
-        { key: 'effects.shadow.blur', label: '投影模糊', group: '投影', type: 'number', min: 0, max: 50, step: 0.5, default: DEFAULT_SHADOW_PLACEHOLDER.blur },
-        { key: 'effects.shadow.color', label: '投影色', group: '投影', type: 'color', default: DEFAULT_SHADOW_PLACEHOLDER.color },
-        { key: 'effects.shine.blur', label: '发光模糊', group: '外发光', type: 'number', min: 0, max: 50, step: 0.5, default: DEFAULT_SHINE_PLACEHOLDER.blur },
-        { key: 'effects.shine.size', label: '发光大小', group: '外发光', type: 'number', min: 0, max: 20, step: 0.5, default: DEFAULT_SHINE_PLACEHOLDER.size },
-        { key: 'effects.shine.color', label: '发光色', group: '外发光', type: 'color', default: DEFAULT_SHINE_PLACEHOLDER.color },
-    ];
+    const PICKER_FIELD_KEYS = ['key', 'label', 'group', 'type', 'min', 'max', 'step', 'default'];
+    const ADJUSTABLE_FIELDS = ADV_FIELDS.map((f) => {
+        const out = {};
+        // 只搬声明里真有的槽位（颜色字段没有 min/max/step，别把 undefined 键塞进去）
+        PICKER_FIELD_KEYS.forEach((k) => { if (f[k] !== undefined) out[k] = f[k]; });
+        return out;
+    });
 
     // 规范化 effects：补齐缺失字段，保证 buildModel 访问安全。
     // （moves 已收编进 motion 阶段引擎，不再作为 effects 字段）

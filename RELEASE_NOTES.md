@@ -1,3 +1,61 @@
+## 更新内容（6.12.0）
+
+**行为变更：弹幕模式「高级编辑」区的 17 个控件改由声明生成，`ADJUSTABLE_FIELDS` 并入同一份声明。**
+
+- **新增 `src/35-adv-fields.js`（高级字段统一声明）**：`ADV_FIELDS`（14 条可调字段，每条带一个只管编辑区的
+  `ui` 槽）+ `ADV_GATES`（3 个「启用」开关）+ `key ↔ advancedConfig 路径` 的换算 `advFieldPath`。
+  **一张表驱动三处**：高级编辑区的 17 个控件、`openAdjustablePicker` 的勾选清单、`exportAdvancedPreset`
+  的「勾选 → params」转换；字段顺序 = 编辑区行序 = 勾选层分组序 = 导出 params 序
+- **`gdm-form.js` 新增 `buildFieldForm`（声明驱动的字段组，「行 / 单元 / 控件」三层）**：① **行内多单元**
+  （`ui.cellClass` + `ui.prefix`，即「X/Y/Z 三连」「模糊/大小」那类单元格的通用表达）；② **必需 `ui.id`**
+  ——与 `buildParamControl` 刻意相反（那边「同一份控件挂两处，加 id 必然重名」故不设 id；本区「id 就是
+  回读契约」）；③ **门控**（`ui.gate`：门关时受控控件 disabled，开关变化与 `sync()` 都实时重算，并用
+  `ctx.gateEnabled` 压住「预设接管高级字段时门不得放开」）；④ 尾部说明文字（`ui.after: { text, style }`，
+  复用 list 控件的形状）；⑤ 值回退链（`ui.read: 'value' | 'gate'`）。**本控件不写值**：值由调用方
+  `ctx.readRaw` 现读、变化后自己去回读，故没有 `buildParamControl` 的 `set`（一份值两条写路径正是这类
+  按 id 回读的表单要消灭的东西）。事件择取与旧接线逐条一致：number/color 绑 `input`，门绑 `change`
+- **`85-danmaku.js`**：新增 `ADV_FORM_DECL` + `renderAdvancedForm()`（声明与 `advancedConfig` 之间只有
+  `ctx.readRaw` / `onChange` / `onGateChange` / `gateEnabled` 四条接线）；`openAdjustablePicker` 与
+  `exportAdvancedPreset` 改读 `ADV_FIELDS`；`resetAdvancedConfig()` 里 14 行逐个 `setVal` + 3 行
+  `checked = false` 改为 `advCtl.sync()`
+- **`95-events.js`**：删除「14 个 id 逐个绑 `input` + 3 个开关绑 `change`」的接线（事件随控件生成），
+  改为在区块开头调用 `renderAdvancedForm()`——必须在按 id 取节点之前，故不能挪位
+- **`80-ui.js`**：`#cf-adv-body` 从 38 行手写 HTML 变为空容器；`advancedConfig` 与两个
+  `DEFAULT_*_PLACEHOLDER` 的 import 一并移除。**`boot.js` 的 CSS 零改动**（未新增类名、未改样式）
+- **`40-core.js` 的 `ADJUSTABLE_FIELDS` 变成派生值**（由 `ADV_FIELDS` 逐条投影，14 条、顺序与字段全等，
+  对既有 import 与冒烟断言零影响）；同一批字段不再有两份声明
+- **id 契约未变**：`readAdvancedConfig` 里读这些字段的那一段**一行未改**（仍按 `#cf-adv-*` 逐个取值），
+  生成器产出的 id 与它逐字相同
+- **有意的 DOM 差异（两处）**：① 10 个 number 输入框多出 `step` 属性——层级 / 旋转 X-Y-Z / 投影 X-Y 为
+  `step="1"`（HTML 默认值，行为等价），模糊 / 投影模糊 / 发光模糊 / 发光大小为 `step="0.5"`（箭头键步进
+  由默认 1 变 0.5；`.value` 读取与 `parseFloat` 回读路径不受影响）。原手写模板只给缩放 X/Y 写了
+  `step="0.1"`，而字段表早为这几个字段声明了 `0.5`——两份声明合并后取字段表这一份；
+  ② `#cf-adv-body` 下多了一层无类名的容器 div（字段组控件的 `node`），与 6.11.0 运动轨迹片同一形态；
+  没有任何选择器依赖 `#cf-adv-body > .cf-row` 这种直接子代关系（`syncEditorOwnedUI` 用的是后代
+  `querySelectorAll`，`boot.js` 的 `.cf-row` 规则也是后代选择器）
+- **三处值回退链逐条保住**：① 直接值（层级/旋转/缩放/模糊）走 `raw ?? default`；② 投影与外发光门关时
+  显示 `DEFAULT_*_PLACEHOLDER.*`（`ui.read: 'gate'`）；③ 三个开关的勾选态 = `blur > 0` / `!!shadow` /
+  `!!shine`（`checked: 'positive' | 'truthy'`）
+- **`resetAdvancedConfig()` 等价性**：`advCtl.sync()` 按同一套回退规则重读刚复位的 `advancedConfig`，
+  回写全部 14 个控件与 3 个开关，取值与旧 `setVal` 逐条相同（证据见下条的一次性 DOM 垫片）；`syncAdvEnableUI()`
+  照旧调用，禁用态来源不变
+- **迁移期一次性 DOM 垫片（脚本不进仓）**：① **静态对照**——把旧模板渲染出的 DOM 与新声明生成的 DOM
+  规范化后逐项对照，5 组夹具（出厂默认 / 全开 / 只开投影 / 只开模糊 / 只开外发光且全 0）**行级全等，
+  差异仅限上述两处**；另一组（门开但子字段缺项）新侧落回声明默认值、旧侧渲染出 `value="undefined"`
+  —— 只可能出现在手改/导入的不完整 effects 上，且那时整区已被预设接管禁用，回读路径等价
+  ② **真实调用链**——在同一垫片上跑 `renderAdvancedForm()` 与声明控件注册的真实事件处理：改动输入框
+  （`input`）→ `readAdvancedConfig` 写回 `advancedConfig`；开关三个门（`change`）→ 联动 disabled 态与
+  `shadow`/`blur` 的置空/占位；`resetAdvancedConfig()` → `sync()` 回写全部控件与开关；预设带 effects 时
+  勾门也**不会**把整区禁用放开。29 条断言全过（垫片是桩不是浏览器：无真实事件派发、无布局、无 CSS）
+- **新增单测 `test/unit/adv-fields.test.mjs`（12 条）**：回读侧 id 集 ↔ 声明 id 集双向比对、12 number +
+  2 color + 3 checkbox 计数、key ↔ id 逐条对齐（advancedConfig 路径 ↔ effects 路径）、门控三向绑定
+  （回读侧 `.checked` ↔ `ADV_GATES` ↔ `90-preset-ui.syncAdvEnableUI` 里按 id 写死的禁用清单）、值回退链
+  （回读侧每个 `g('#id')` 的兜底 token 解析后必须等于声明的 `default`）、`ADJUSTABLE_FIELDS` 与
+  `ADV_FIELDS` 的投影一致性、旧手写模板在 80-ui 里零残留。单测 62 条 → 74 条
+- **未验证边界**：无真浏览器——「生成的 DOM 与旧模板一致」由上述一次性垫片脚本与单测的静态比对支撑，
+  **不是**真实渲染结果；`ensurePanel()` 重建面板后不会重跑 `renderAdvancedForm()`（旧实现在同样情形下
+  连事件绑定一起丢，非本片引入的新问题）
+
 ## 更新内容（6.11.0）
 
 **行为变更：运动轨迹列表改由 schema 生成（`gdm-form` 新增 `list` 控件类型与其 `nullable` 语义）。**

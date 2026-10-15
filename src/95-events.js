@@ -1,10 +1,12 @@
     // ============================================================
     //  事件绑定
     // ============================================================
-    // 理解卡｜我拥有：bindEvents()——全部 #cf-* 控件的事件绑定（含 14 个高级字段 input → readAdvancedConfig）。
+    // 理解卡｜我拥有：bindEvents()——面板壳与区块级按钮/控件的事件绑定（文件/列表/预设/样式/发送）。
     // 我承诺：纯绑定无自建状态；尾部首次同步（updatePresetUI/syncAdvEnableUI/renderMoves）是面板初始态唯一来源。
     // 我永不：不在绑定回调里写长段业务逻辑（调度回 80/85/90 的函数）。
-    // 改我前读：新增控件必须同步此处，漏绑 = 静默无反应（无报错）；P3 随组件函数走，本文件将被消灭。
+    // 改我前读：新增控件必须同步此处，漏绑 = 静默无反应（无报错）；**例外是高级编辑区**——它的 17 个控件
+    //   自 6.12.0 起由 renderAdvancedForm() 用声明生成并自带事件（本文件只负责在按 id 取节点前调用它），
+    //   故这里不再有 '#cf-adv-*' 选择器；P3 随组件函数走，本文件将被消灭。
 
 import { $, $$, hexToRgb, status } from './20-utils.js';
 import {
@@ -21,7 +23,7 @@ import {
 } from './80-ui.js';
 import {
     addMove, exportAdvancedPreset, parseManualTime, pickManualTime, previewManual,
-    readAdvancedConfig, renderMoves, resetAdvancedConfig, sendManual, switchPanelMode,
+    renderAdvancedForm, renderMoves, resetAdvancedConfig, sendManual, switchPanelMode,
     toggleAdvFold, updateManualCount,
 } from './85-danmaku.js';
 import {
@@ -68,19 +70,14 @@ import {
         $('#cf-danmaku-preview').addEventListener('click', previewManual);
         $('#cf-danmaku-send').addEventListener('click', sendManual);
         // 高级编辑
+        // 17 个控件（含 3 个「启用」开关）由声明生成：渲染时事件一并接好（值 → readAdvancedConfig、
+        // 门 → syncAdvEnableUI），故本行必须在下面任何按 id 取节点的语句**之前**；
+        // 原「14 个 id 逐个绑 input + 3 个开关绑 change」的接线随之删除（改由控件自持，免得一条改动回读两遍）。
+        renderAdvancedForm();
         $('#cf-fold-adv').addEventListener('click', toggleAdvFold);
         $('#cf-adv-reset').addEventListener('click', resetAdvancedConfig);
         $('#cf-move-add').addEventListener('click', addMove);
         $('#cf-export-advanced').addEventListener('click', exportAdvancedPreset);
-        // 高级字段变化时即时写回 advancedConfig
-        ['#cf-adv-zindex', '#cf-adv-rx', '#cf-adv-ry', '#cf-adv-rz', '#cf-adv-sx', '#cf-adv-sy', '#cf-adv-blur', '#cf-adv-shx', '#cf-adv-shy', '#cf-adv-shb', '#cf-adv-shc', '#cf-adv-snb', '#cf-adv-sns', '#cf-adv-snc'].forEach((sel) => {
-            const el = $(sel);
-            if (el) el.addEventListener('input', readAdvancedConfig);
-        });
-        // 投影/外发光/模糊「启用」开关：联动禁用态并回写 advancedConfig（关闭→置空）
-        $('#cf-adv-sh-on').addEventListener('change', () => { syncAdvEnableUI(); readAdvancedConfig(); });
-        $('#cf-adv-sn-on').addEventListener('change', () => { syncAdvEnableUI(); readAdvancedConfig(); });
-        $('#cf-adv-blur-on').addEventListener('change', () => { syncAdvEnableUI(); readAdvancedConfig(); });
         syncAdvEnableUI();
         renderMoves();
         $('#cf-fold').addEventListener('click', toggleFold);

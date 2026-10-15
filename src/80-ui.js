@@ -5,14 +5,16 @@
     //   startSend 批量发送循环、切片对齐、全选/反选/范围选。
     // 我承诺：批量发送前 confirm 展示「N 条字幕 → M 条弹幕」计数；逐条 sleep(sendInterval) 节流；取消即时生效。
     // 我永不：confirm( 全仓白名单 3 处我占 1（check 门禁盯着，只减不增）。
-    // 改我前读：面板先挂 body（display:none）再由 99-main 搬进原生面板壳——document 级查询依赖这个顺序；
+    // 改我前读：面板先挂 body（display:none）再由 boot.js 搬进原生面板壳——document 级查询依赖这个顺序；
+    //   高级编辑区（#cf-adv-body）自 6.12.0 起**只剩空容器**，17 个控件由 35-adv-fields 的声明经
+    //   85-danmaku.renderAdvancedForm 生成（事件也随生成接好）——往模板里补一行 #cf-adv-* 即造出第二真源；
     //   P3 我将被 gdm-panel 取代，别在我身上加新功能（RISKS R2 范围守门）。
 
-import { ANCHORS, DEFAULT_DURATION, DEFAULT_SHADOW_PLACEHOLDER, DEFAULT_SHINE_PLACEHOLDER, FONTS, FONT_LABELS, MAX_DURATION } from './10-constants.js';
+import { ANCHORS, DEFAULT_DURATION, FONTS, FONT_LABELS, MAX_DURATION } from './10-constants.js';
 import { $, escapeHtml, fmt, rgbToHex, sleep, status } from './20-utils.js';
 import { parseSub } from './30-parser.js';
 import {
-    activePresetId, advancedConfig, bilingualMode, cancelled, currentStyleConfig, getVideoInfo,
+    activePresetId, bilingualMode, cancelled, currentStyleConfig, getVideoInfo,
     listFolded, presetFolded, sendInterval, sending, setCancelled, setListFolded, setPresetFolded,
     setSending, setSliceMode, setStyleFolded, setSubs, setTimeOffset, setTimeOffsetBackup, sliceMode,
     storeSet, styleFolded, styleSource, subs, timeOffset, timeOffsetBackup,
@@ -191,44 +193,9 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
                 <div class="cf-row" id="cf-adv-owner-tip" style="display:none">
                     <span style="font-size:11px;color:#fd4c5d">📍 高级字段由预设控制，请在预设面板调整</span>
                 </div>
-                <div id="cf-adv-body">
-                    <div class="cf-row">
-                        <label>层级</label>
-                        <input type="number" id="cf-adv-zindex" min="1" max="99" value="${advancedConfig.zIndex}">
-                    </div>
-                    <div class="cf-row">
-                        <label>旋转</label>
-                        <span class="cf-adv-3">X<input type="number" id="cf-adv-rx" min="-360" max="360" value="${advancedConfig.rotate.x}"></span>
-                        <span class="cf-adv-3">Y<input type="number" id="cf-adv-ry" min="-360" max="360" value="${advancedConfig.rotate.y}"></span>
-                        <span class="cf-adv-3">Z<input type="number" id="cf-adv-rz" min="-360" max="360" value="${advancedConfig.rotate.z}"></span>
-                    </div>
-                    <div class="cf-row">
-                        <label>缩放</label>
-                        <span class="cf-adv-3">X<input type="number" id="cf-adv-sx" min="0.1" max="5" step="0.1" value="${advancedConfig.scale.x}"></span>
-                        <span class="cf-adv-3">Y<input type="number" id="cf-adv-sy" min="0.1" max="5" step="0.1" value="${advancedConfig.scale.y}"></span>
-                    </div>
-                    <div class="cf-row">
-                        <label>模糊</label>
-                        <label class="cf-chk"><input type="checkbox" id="cf-adv-blur-on"${advancedConfig.blur > 0 ? ' checked' : ''}>启用</label>
-                        <input type="number" id="cf-adv-blur" min="0" max="50" value="${advancedConfig.blur || 0}"${advancedConfig.blur > 0 ? '' : ' disabled'}>
-                        <span style="font-size:11px;color:#999">px</span>
-                    </div>
-                    <div class="cf-row">
-                        <label>投影</label>
-                        <label class="cf-chk"><input type="checkbox" id="cf-adv-sh-on"${advancedConfig.shadow ? ' checked' : ''}>启用</label>
-                        <span class="cf-adv-3">X<input type="number" id="cf-adv-shx" min="-100" max="100" value="${advancedConfig.shadow ? advancedConfig.shadow.x : DEFAULT_SHADOW_PLACEHOLDER.x}"${advancedConfig.shadow ? '' : ' disabled'}></span>
-                        <span class="cf-adv-3">Y<input type="number" id="cf-adv-shy" min="-100" max="100" value="${advancedConfig.shadow ? advancedConfig.shadow.y : DEFAULT_SHADOW_PLACEHOLDER.y}"${advancedConfig.shadow ? '' : ' disabled'}></span>
-                        <span class="cf-adv-3">模糊<input type="number" id="cf-adv-shb" min="0" max="50" value="${advancedConfig.shadow ? advancedConfig.shadow.blur : DEFAULT_SHADOW_PLACEHOLDER.blur}"${advancedConfig.shadow ? '' : ' disabled'}></span>
-                        <input type="color" id="cf-adv-shc" value="${advancedConfig.shadow ? advancedConfig.shadow.color : DEFAULT_SHADOW_PLACEHOLDER.color}"${advancedConfig.shadow ? '' : ' disabled'}>
-                    </div>
-                    <div class="cf-row">
-                        <label>外发光</label>
-                        <label class="cf-chk"><input type="checkbox" id="cf-adv-sn-on"${advancedConfig.shine ? ' checked' : ''}>启用</label>
-                        <span class="cf-adv-3">模糊<input type="number" id="cf-adv-snb" min="0" max="50" value="${advancedConfig.shine ? advancedConfig.shine.blur : DEFAULT_SHINE_PLACEHOLDER.blur}"${advancedConfig.shine ? '' : ' disabled'}></span>
-                        <span class="cf-adv-3">大小<input type="number" id="cf-adv-sns" min="0" max="20" value="${advancedConfig.shine ? advancedConfig.shine.size : DEFAULT_SHINE_PLACEHOLDER.size}"${advancedConfig.shine ? '' : ' disabled'}></span>
-                        <input type="color" id="cf-adv-snc" value="${advancedConfig.shine ? advancedConfig.shine.color : DEFAULT_SHINE_PLACEHOLDER.color}"${advancedConfig.shine ? '' : ' disabled'}>
-                    </div>
-                </div>
+                <!-- 高级编辑的 17 个控件由 35-adv-fields 的声明生成（85-danmaku 的表单渲染入口，
+                     模板里再写一行 #cf-adv-* 就会给回读契约造出第二个来源） -->
+                <div id="cf-adv-body"></div>
             </div>
 
             <div class="cf-sec" id="cf-moves-sec">

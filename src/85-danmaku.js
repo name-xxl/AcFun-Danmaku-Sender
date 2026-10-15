@@ -2,28 +2,33 @@
     //  弹幕模式（手动单条输入）
     // ============================================================
     // 理解卡｜我拥有：switchPanelMode（预设/样式区 DOM 在两模式间搬移复用）、makeManualSub 虚拟字幕、
-    //   高级编辑全字段（TIMING_FUNCS 28 缓动 / MOVES_DECL 运动轨迹声明 / readAdvancedConfig / renderMoves /
-    //   exportAdvancedPreset）。
-    // 我承诺：单条与批量走同一条 expandSub → sendModel 管线（单发不是特例路径）。
+    //   高级编辑全字段（TIMING_FUNCS 28 缓动 / ADV_FORM_DECL + renderAdvancedForm 编辑区表单 /
+    //   MOVES_DECL 运动轨迹声明 / readAdvancedConfig / renderMoves / exportAdvancedPreset）。
+    // 我承诺：单条与批量走同一条 expandSub → sendModel 管线（单发不是特例路径）；
+    //   高级字段的取值真源仍是 DOM（readAdvancedConfig 按 id 回读），控件只显示与报告变化。
     // 我永不：不碰批量/时间轴发送（80-ui 的 startSend 职责）；syncAdvEnableUI 已迁 90-preset-ui
     //   （状态双源补丁，病灶②存量；依赖图无环要求），P3 要消灭这个模式而不是复制它。
     // 改我前读：P3 我并入 gdm-panel 成「简单模式」；预设区/样式区 DOM 节点是两模式共享的，动布局先想另一半；
+    //   高级编辑区的 17 个控件自 6.12.0 起由 35-adv-fields 的统一声明按 gdm-form.buildFieldForm 生成——
+    //   **id 即回读契约**（readAdvancedConfig 那段按 id 取值，一行未改），动声明必须同步
+    //   test/unit/adv-fields.test.mjs（回读侧 id / 兜底 token / 门控 / ADJUSTABLE_FIELDS 派生 四处对拍）；
     //   运动轨迹列表的 DOM 自 6.11.0 起由 gdm-form 的 list 控件按 MOVES_DECL 生成——**类名即回读契约**
     //   （readAdvancedConfig 靠 .cf-move-item / .cf-mv-* 取值），动声明必须同步 test/unit/moves-schema.test.mjs；
     //   坐标/拉伸/旋转/耗时留空 = null（跟随样式/本体/时长），不是 0，见声明里的 nullable。
 
 import { DEFAULT_DURATION, DEFAULT_SHADOW_PLACEHOLDER, DEFAULT_SHINE_PLACEHOLDER, DEFAULT_ZINDEX, MAX_DURATION } from './10-constants.js';
-import { $, $$, fmt, status } from './20-utils.js';
+import { $, $$, fmt, getByPath, status } from './20-utils.js';
+import { ADV_FIELDS, ADV_GATES, advFieldPath } from './35-adv-fields.js';
 import {
-    ADJUSTABLE_FIELDS, DEFAULT_ADVANCED_CONFIG, advancedConfig, clamp, getPlayer, getVideoInfo, num,
+    DEFAULT_ADVANCED_CONFIG, advancedConfig, clamp, getPlayer, getVideoInfo, num,
     setAdvancedConfig, timeOffset,
 } from './40-core.js';
-import { cfgFor, expandSub } from './50-engine.js';
+import { activePresetHasEffects, cfgFor, expandSub } from './50-engine.js';
 import { sendModel } from './60-network.js';
 import { previewSub } from './70-preview.js';
 import { panelMode, setPanelMode } from './80-ui.js';
 import { openExportDialog, syncAdvEnableUI } from './90-preset-ui.js';
-import { buildParamControl } from './gdm-form.js';
+import { buildFieldForm, buildParamControl } from './gdm-form.js';
 
     // 切换 字幕模式 / 弹幕模式（预设、样式区在两种模式间复用）
     function switchPanelMode(mode) {
@@ -334,6 +339,34 @@ import { buildParamControl } from './gdm-form.js';
     const getMoves = () => advancedConfig.moves;
     const setMoves = (arr) => { advancedConfig.moves = arr; };
 
+    // ============================================================
+    //  高级编辑区（17 个控件）——声明在 35-adv-fields，DOM 由 gdm-form.buildFieldForm 生成
+    // ============================================================
+    // 表单声明 = 门 + 字段两张表，原样取自 35-adv-fields 的统一声明（本文件不另抄一份）。
+    const ADV_FORM_DECL = { gates: ADV_GATES, fields: ADV_FIELDS };
+    let advCtl = null;          // 当前挂着的表单控件（resetAdvancedConfig 用它 sync）
+
+    // 渲染高级编辑区：12 number + 2 color + 3 checkbox 一次生成，事件随生成接好——
+    //   · 值：readRaw 现读 advancedConfig（key 去掉 effects. 前缀即路径），null/undefined 由控件落回声明里的 default；
+    //     回退链（门关显示占位 / 门开显示存储值）也归声明，见 35-adv-fields 的 ui.read
+    //   · 改动：一律回 readAdvancedConfig() 整份回读——DOM 仍是高级字段的取值真源，
+    //     readAdvancedConfig 那段按 id 取值的代码因此**一行未改**（id 契约见 test/unit/adv-fields.test.mjs）
+    //   · 门：syncAdvEnableUI()（90-preset-ui）继续是禁用态的唯一外部入口；这里额外用 gateEnabled 把
+    //     「预设接管高级字段时整区禁用」压住，免得门把预设的禁用态放开
+    // 调用点：95-events 的 bindEvents **按 id 绑事件之前**（否则取不到节点），故不能挪。
+    function renderAdvancedForm() {
+        const box = $('#cf-adv-body');
+        if (!box) return;
+        box.innerHTML = '';
+        advCtl = buildFieldForm(ADV_FORM_DECL, {
+            readRaw: (f) => getByPath(advancedConfig, advFieldPath(f.key)),
+            onChange: () => readAdvancedConfig(),
+            onGateChange: () => { syncAdvEnableUI(); readAdvancedConfig(); },
+            gateEnabled: () => !activePresetHasEffects(),
+        });
+        box.appendChild(advCtl.node);
+    }
+
     // 渲染运动轨迹列表：DOM 由列表控件的 MOVES_DECL 声明生成（类名/结构/占位/初值折叠态与旧模板逐项一致）。
     // 外部调用点（95-events 的首次同步、resetAdvancedConfig）不变——本函数名与签名保持不变。
     function renderMoves() {
@@ -351,28 +384,14 @@ import { buildParamControl } from './gdm-form.js';
         if (movesCtl) movesCtl.add();
     }
 
-    // 高级编辑「恢复默认」：重置 advancedConfig 为默认快照，并同步全部控件/开关/运动轨迹 UI
+    // 高级编辑「恢复默认」：重置 advancedConfig 为默认快照，并同步全部控件/开关/运动轨迹 UI。
+    // 6.12.0：原先按 id 逐个 setVal 的那 14 行 + 三个 checked=false，改为 advCtl.sync()——它按声明的
+    //   同一套回退规则重读 advancedConfig 回写显示（层级/旋转/缩放/模糊取直接值，投影与外发光因门关
+    //   取 DEFAULT_*_PLACEHOLDER.*，三个开关 unchecked），与旧 setVal 的取值逐条相同（见
+    //   test/unit/adv-fields.test.mjs 的值回退链断言）。禁用态仍交给 syncAdvEnableUI()（下面照旧调用）。
     function resetAdvancedConfig() {
         setAdvancedConfig(JSON.parse(JSON.stringify(DEFAULT_ADVANCED_CONFIG)));
-        const setVal = (id, val) => { const e = $(id); if (e) e.value = val; };
-        setVal('#cf-adv-zindex', advancedConfig.zIndex);
-        setVal('#cf-adv-rx', advancedConfig.rotate.x);
-        setVal('#cf-adv-ry', advancedConfig.rotate.y);
-        setVal('#cf-adv-rz', advancedConfig.rotate.z);
-        setVal('#cf-adv-sx', advancedConfig.scale.x);
-        setVal('#cf-adv-sy', advancedConfig.scale.y);
-        setVal('#cf-adv-blur', advancedConfig.blur);
-        // 投影/外发光：关闭并复位占位值
-        setVal('#cf-adv-shx', DEFAULT_SHADOW_PLACEHOLDER.x);
-        setVal('#cf-adv-shy', DEFAULT_SHADOW_PLACEHOLDER.y);
-        setVal('#cf-adv-shb', DEFAULT_SHADOW_PLACEHOLDER.blur);
-        setVal('#cf-adv-shc', DEFAULT_SHADOW_PLACEHOLDER.color);
-        setVal('#cf-adv-snb', DEFAULT_SHINE_PLACEHOLDER.blur);
-        setVal('#cf-adv-sns', DEFAULT_SHINE_PLACEHOLDER.size);
-        setVal('#cf-adv-snc', DEFAULT_SHINE_PLACEHOLDER.color);
-        const shOn = $('#cf-adv-sh-on'); if (shOn) shOn.checked = false;
-        const snOn = $('#cf-adv-sn-on'); if (snOn) snOn.checked = false;
-        const blurOn = $('#cf-adv-blur-on'); if (blurOn) blurOn.checked = false;
+        if (advCtl) advCtl.sync();
         syncAdvEnableUI();
         renderMoves();
         status('↩ 高级编辑已恢复默认', 'ok');
@@ -390,6 +409,7 @@ import { buildParamControl } from './gdm-form.js';
 
     // 导出前的「可调字段」勾选层：勾中的字段会写成 params 声明（导入后可在预设区微调），
     // 未勾选的字段仍随 effects 整体导出并生效，只是不进入可调控件。
+    // 清单直接读 35-adv-fields 的统一声明（与编辑区同一张表）；40-core 的 ADJUSTABLE_FIELDS 是它的派生投影。
     function openAdjustablePicker(onConfirm) {
         const old = $('#cf-adjust-picker');
         if (old) old.remove();
@@ -415,7 +435,7 @@ import { buildParamControl } from './gdm-form.js';
 
         const body = mask.querySelector('.cf-adjust-body');
         let lastGroup = undefined;
-        ADJUSTABLE_FIELDS.forEach((f) => {
+        ADV_FIELDS.forEach((f) => {
             if (f.group !== lastGroup) {
                 lastGroup = f.group;
                 const t = document.createElement('div');
@@ -446,8 +466,9 @@ import { buildParamControl } from './gdm-form.js';
         readAdvancedConfig();
         openAdjustablePicker((checkedKeys) => {
             const chosen = new Set(checkedKeys);
-            // 勾选的字段 → params 声明（保留 type/min/max/step/group/default，供导入后渲染控件）
-            const params = ADJUSTABLE_FIELDS
+            // 勾选的字段 → params 声明（保留 type/min/max/step/group/default，供导入后渲染控件）；
+            // 逐槽位搬运，声明里的 ui 槽（id/门控/前缀，只管编辑区）不会漏进导出 JSON
+            const params = ADV_FIELDS
                 .filter((f) => chosen.has(f.key))
                 .map((f) => {
                     const p = { key: f.key, label: f.label, type: f.type, group: f.group };
@@ -491,10 +512,12 @@ import { buildParamControl } from './gdm-form.js';
 // —— ESM 导出（6.8.0 迁移）——
 export {
     addMove, exportAdvancedPreset, parseManualTime, pickManualTime, previewManual,
-    readAdvancedConfig, renderMoves, resetAdvancedConfig, sendManual, switchPanelMode,
+    readAdvancedConfig, renderAdvancedForm, renderMoves, resetAdvancedConfig, sendManual, switchPanelMode,
     toggleAdvFold, updateManualCount,
 };
 // 仅供冒烟测试：不对其它 src 模块开放
 export { TIMING_FUNCS };
 // 仅供测试（test/unit/moves-schema.test.mjs 的类名双向比对：声明产出的类名 ↔ 回读侧选择器）
 export { MOVES_DECL };
+// 仅供测试（test/unit/adv-fields.test.mjs：断言编辑区声明的就是 35-adv-fields 那两张表，没有第三份）
+export { ADV_FORM_DECL };

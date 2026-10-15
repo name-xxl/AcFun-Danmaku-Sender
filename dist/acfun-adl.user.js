@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AcFun 高级弹幕层编辑器 (ADL)
 // @namespace    https://github.com/acfun-danmaku-sender
-// @version      6.11.0
+// @version      6.12.0
 // @description  视频的高级弹幕层编辑器：给视频加一条可发布的字幕/特效轨道，所见即所得，发送只是导出。导入 SRT/ASS/LRC，预设特效，彩排通过才可导出。
 // @author       name_xxl
 // @match        *://www.acfun.cn/v/ac*
@@ -150,6 +150,171 @@
   BUILTIN_PRESETS.forEach((p) => {
     DEFAULT_PRESET_OPTIONS[p.id] = Object.assign({}, p.options);
   });
+
+  // src/35-adv-fields.js
+  var ADV_FIELDS = [
+    // —— 直接值：层级 / 旋转 / 缩放 / 模糊 ——
+    {
+      key: "effects.zIndex",
+      label: "层级",
+      group: "层级",
+      type: "number",
+      min: 1,
+      max: 99,
+      step: 1,
+      default: DEFAULT_ZINDEX,
+      ui: { id: "cf-adv-zindex", read: "value" }
+    },
+    {
+      key: "effects.rotate.x",
+      label: "旋转 X°",
+      group: "旋转",
+      type: "number",
+      min: -360,
+      max: 360,
+      step: 1,
+      default: 0,
+      ui: { id: "cf-adv-rx", prefix: "X", cellClass: "cf-adv-3", read: "value" }
+    },
+    {
+      key: "effects.rotate.y",
+      label: "旋转 Y°",
+      group: "旋转",
+      type: "number",
+      min: -360,
+      max: 360,
+      step: 1,
+      default: 0,
+      ui: { id: "cf-adv-ry", prefix: "Y", cellClass: "cf-adv-3", read: "value" }
+    },
+    {
+      key: "effects.rotate.z",
+      label: "旋转 Z°",
+      group: "旋转",
+      type: "number",
+      min: -360,
+      max: 360,
+      step: 1,
+      default: 0,
+      ui: { id: "cf-adv-rz", prefix: "Z", cellClass: "cf-adv-3", read: "value" }
+    },
+    {
+      key: "effects.scale.x",
+      label: "缩放 X",
+      group: "缩放",
+      type: "number",
+      min: 0.1,
+      max: 5,
+      step: 0.1,
+      default: 1,
+      ui: { id: "cf-adv-sx", prefix: "X", cellClass: "cf-adv-3", read: "value" }
+    },
+    {
+      key: "effects.scale.y",
+      label: "缩放 Y",
+      group: "缩放",
+      type: "number",
+      min: 0.1,
+      max: 5,
+      step: 0.1,
+      default: 1,
+      ui: { id: "cf-adv-sy", prefix: "Y", cellClass: "cf-adv-3", read: "value" }
+    },
+    // 模糊：门控只管「开/关」，数值本身照常显示存储值——旧模板是 `blur || 0`，与 raw ?? default(0) 等价
+    // （模糊关时 readAdvancedConfig 把 blur 归 0，故 off 与 default 不会分叉）
+    {
+      key: "effects.blur",
+      label: "模糊(px)",
+      group: "模糊",
+      type: "number",
+      min: 0,
+      max: 50,
+      step: 0.5,
+      default: 0,
+      ui: { id: "cf-adv-blur", read: "value", gate: "blur", after: { text: "px", style: "font-size:11px;color:#999" } }
+    },
+    // —— 门控值：投影 ——（门关时三个数值 + 颜色都显示 DEFAULT_SHADOW_PLACEHOLDER.*，与旧模板一致）
+    {
+      key: "effects.shadow.x",
+      label: "投影 X",
+      group: "投影",
+      type: "number",
+      min: -100,
+      max: 100,
+      step: 1,
+      default: DEFAULT_SHADOW_PLACEHOLDER.x,
+      ui: { id: "cf-adv-shx", prefix: "X", cellClass: "cf-adv-3", read: "gate", gate: "shadow" }
+    },
+    {
+      key: "effects.shadow.y",
+      label: "投影 Y",
+      group: "投影",
+      type: "number",
+      min: -100,
+      max: 100,
+      step: 1,
+      default: DEFAULT_SHADOW_PLACEHOLDER.y,
+      ui: { id: "cf-adv-shy", prefix: "Y", cellClass: "cf-adv-3", read: "gate", gate: "shadow" }
+    },
+    {
+      key: "effects.shadow.blur",
+      label: "投影模糊",
+      group: "投影",
+      type: "number",
+      min: 0,
+      max: 50,
+      step: 0.5,
+      default: DEFAULT_SHADOW_PLACEHOLDER.blur,
+      ui: { id: "cf-adv-shb", prefix: "模糊", cellClass: "cf-adv-3", read: "gate", gate: "shadow" }
+    },
+    {
+      key: "effects.shadow.color",
+      label: "投影色",
+      group: "投影",
+      type: "color",
+      default: DEFAULT_SHADOW_PLACEHOLDER.color,
+      ui: { id: "cf-adv-shc", read: "gate", gate: "shadow" }
+    },
+    // —— 门控值：外发光 ——（门关时两个数值 + 颜色都显示 DEFAULT_SHINE_PLACEHOLDER.*）
+    {
+      key: "effects.shine.blur",
+      label: "发光模糊",
+      group: "外发光",
+      type: "number",
+      min: 0,
+      max: 50,
+      step: 0.5,
+      default: DEFAULT_SHINE_PLACEHOLDER.blur,
+      ui: { id: "cf-adv-snb", prefix: "模糊", cellClass: "cf-adv-3", read: "gate", gate: "shine" }
+    },
+    {
+      key: "effects.shine.size",
+      label: "发光大小",
+      group: "外发光",
+      type: "number",
+      min: 0,
+      max: 20,
+      step: 0.5,
+      default: DEFAULT_SHINE_PLACEHOLDER.size,
+      ui: { id: "cf-adv-sns", prefix: "大小", cellClass: "cf-adv-3", read: "gate", gate: "shine" }
+    },
+    {
+      key: "effects.shine.color",
+      label: "发光色",
+      group: "外发光",
+      type: "color",
+      default: DEFAULT_SHINE_PLACEHOLDER.color,
+      ui: { id: "cf-adv-snc", read: "gate", gate: "shine" }
+    }
+  ];
+  var ADV_GATES = [
+    { key: "blur", id: "cf-adv-blur-on", type: "checkbox", label: "启用", group: "模糊", className: "cf-chk", checked: "positive" },
+    { key: "shadow", id: "cf-adv-sh-on", type: "checkbox", label: "启用", group: "投影", className: "cf-chk", checked: "truthy" },
+    { key: "shine", id: "cf-adv-sn-on", type: "checkbox", label: "启用", group: "外发光", className: "cf-chk", checked: "truthy" }
+  ];
+  function advFieldPath(key) {
+    return String(key).replace(/^effects\./, "");
+  }
 
   // src/40-core.js
   var pageWin = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
@@ -328,22 +493,14 @@
     ]
   };
   var DEFAULT_ADVANCED_CONFIG = JSON.parse(JSON.stringify(advancedConfig));
-  var ADJUSTABLE_FIELDS = [
-    { key: "effects.zIndex", label: "层级", group: "层级", type: "number", min: 1, max: 99, step: 1, default: DEFAULT_ZINDEX },
-    { key: "effects.rotate.x", label: "旋转 X°", group: "旋转", type: "number", min: -360, max: 360, step: 1, default: 0 },
-    { key: "effects.rotate.y", label: "旋转 Y°", group: "旋转", type: "number", min: -360, max: 360, step: 1, default: 0 },
-    { key: "effects.rotate.z", label: "旋转 Z°", group: "旋转", type: "number", min: -360, max: 360, step: 1, default: 0 },
-    { key: "effects.scale.x", label: "缩放 X", group: "缩放", type: "number", min: 0.1, max: 5, step: 0.1, default: 1 },
-    { key: "effects.scale.y", label: "缩放 Y", group: "缩放", type: "number", min: 0.1, max: 5, step: 0.1, default: 1 },
-    { key: "effects.blur", label: "模糊(px)", group: "模糊", type: "number", min: 0, max: 50, step: 0.5, default: 0 },
-    { key: "effects.shadow.x", label: "投影 X", group: "投影", type: "number", min: -100, max: 100, step: 1, default: DEFAULT_SHADOW_PLACEHOLDER.x },
-    { key: "effects.shadow.y", label: "投影 Y", group: "投影", type: "number", min: -100, max: 100, step: 1, default: DEFAULT_SHADOW_PLACEHOLDER.y },
-    { key: "effects.shadow.blur", label: "投影模糊", group: "投影", type: "number", min: 0, max: 50, step: 0.5, default: DEFAULT_SHADOW_PLACEHOLDER.blur },
-    { key: "effects.shadow.color", label: "投影色", group: "投影", type: "color", default: DEFAULT_SHADOW_PLACEHOLDER.color },
-    { key: "effects.shine.blur", label: "发光模糊", group: "外发光", type: "number", min: 0, max: 50, step: 0.5, default: DEFAULT_SHINE_PLACEHOLDER.blur },
-    { key: "effects.shine.size", label: "发光大小", group: "外发光", type: "number", min: 0, max: 20, step: 0.5, default: DEFAULT_SHINE_PLACEHOLDER.size },
-    { key: "effects.shine.color", label: "发光色", group: "外发光", type: "color", default: DEFAULT_SHINE_PLACEHOLDER.color }
-  ];
+  var PICKER_FIELD_KEYS = ["key", "label", "group", "type", "min", "max", "step", "default"];
+  var ADJUSTABLE_FIELDS = ADV_FIELDS.map((f) => {
+    const out = {};
+    PICKER_FIELD_KEYS.forEach((k) => {
+      if (f[k] !== void 0) out[k] = f[k];
+    });
+    return out;
+  });
   function normalizeEffects(ef) {
     const src = ef || {};
     return {
@@ -2042,44 +2199,9 @@
                 <div class="cf-row" id="cf-adv-owner-tip" style="display:none">
                     <span style="font-size:11px;color:#fd4c5d">📍 高级字段由预设控制，请在预设面板调整</span>
                 </div>
-                <div id="cf-adv-body">
-                    <div class="cf-row">
-                        <label>层级</label>
-                        <input type="number" id="cf-adv-zindex" min="1" max="99" value="${advancedConfig.zIndex}">
-                    </div>
-                    <div class="cf-row">
-                        <label>旋转</label>
-                        <span class="cf-adv-3">X<input type="number" id="cf-adv-rx" min="-360" max="360" value="${advancedConfig.rotate.x}"></span>
-                        <span class="cf-adv-3">Y<input type="number" id="cf-adv-ry" min="-360" max="360" value="${advancedConfig.rotate.y}"></span>
-                        <span class="cf-adv-3">Z<input type="number" id="cf-adv-rz" min="-360" max="360" value="${advancedConfig.rotate.z}"></span>
-                    </div>
-                    <div class="cf-row">
-                        <label>缩放</label>
-                        <span class="cf-adv-3">X<input type="number" id="cf-adv-sx" min="0.1" max="5" step="0.1" value="${advancedConfig.scale.x}"></span>
-                        <span class="cf-adv-3">Y<input type="number" id="cf-adv-sy" min="0.1" max="5" step="0.1" value="${advancedConfig.scale.y}"></span>
-                    </div>
-                    <div class="cf-row">
-                        <label>模糊</label>
-                        <label class="cf-chk"><input type="checkbox" id="cf-adv-blur-on"${advancedConfig.blur > 0 ? " checked" : ""}>启用</label>
-                        <input type="number" id="cf-adv-blur" min="0" max="50" value="${advancedConfig.blur || 0}"${advancedConfig.blur > 0 ? "" : " disabled"}>
-                        <span style="font-size:11px;color:#999">px</span>
-                    </div>
-                    <div class="cf-row">
-                        <label>投影</label>
-                        <label class="cf-chk"><input type="checkbox" id="cf-adv-sh-on"${advancedConfig.shadow ? " checked" : ""}>启用</label>
-                        <span class="cf-adv-3">X<input type="number" id="cf-adv-shx" min="-100" max="100" value="${advancedConfig.shadow ? advancedConfig.shadow.x : DEFAULT_SHADOW_PLACEHOLDER.x}"${advancedConfig.shadow ? "" : " disabled"}></span>
-                        <span class="cf-adv-3">Y<input type="number" id="cf-adv-shy" min="-100" max="100" value="${advancedConfig.shadow ? advancedConfig.shadow.y : DEFAULT_SHADOW_PLACEHOLDER.y}"${advancedConfig.shadow ? "" : " disabled"}></span>
-                        <span class="cf-adv-3">模糊<input type="number" id="cf-adv-shb" min="0" max="50" value="${advancedConfig.shadow ? advancedConfig.shadow.blur : DEFAULT_SHADOW_PLACEHOLDER.blur}"${advancedConfig.shadow ? "" : " disabled"}></span>
-                        <input type="color" id="cf-adv-shc" value="${advancedConfig.shadow ? advancedConfig.shadow.color : DEFAULT_SHADOW_PLACEHOLDER.color}"${advancedConfig.shadow ? "" : " disabled"}>
-                    </div>
-                    <div class="cf-row">
-                        <label>外发光</label>
-                        <label class="cf-chk"><input type="checkbox" id="cf-adv-sn-on"${advancedConfig.shine ? " checked" : ""}>启用</label>
-                        <span class="cf-adv-3">模糊<input type="number" id="cf-adv-snb" min="0" max="50" value="${advancedConfig.shine ? advancedConfig.shine.blur : DEFAULT_SHINE_PLACEHOLDER.blur}"${advancedConfig.shine ? "" : " disabled"}></span>
-                        <span class="cf-adv-3">大小<input type="number" id="cf-adv-sns" min="0" max="20" value="${advancedConfig.shine ? advancedConfig.shine.size : DEFAULT_SHINE_PLACEHOLDER.size}"${advancedConfig.shine ? "" : " disabled"}></span>
-                        <input type="color" id="cf-adv-snc" value="${advancedConfig.shine ? advancedConfig.shine.color : DEFAULT_SHINE_PLACEHOLDER.color}"${advancedConfig.shine ? "" : " disabled"}>
-                    </div>
-                </div>
+                <!-- 高级编辑的 17 个控件由 35-adv-fields 的声明生成（85-danmaku 的表单渲染入口，
+                     模板里再写一行 #cf-adv-* 就会给回读契约造出第二个来源） -->
+                <div id="cf-adv-body"></div>
             </div>
 
             <div class="cf-sec" id="cf-moves-sec">
@@ -2620,6 +2742,116 @@
       else out[f.key] = "";
     });
     return out;
+  }
+  function buildFieldForm(decl, ctx) {
+    const container = document.createElement("div");
+    if (decl.containerClass) container.className = decl.containerClass;
+    const gates = decl.gates || [];
+    const fields = decl.fields || [];
+    const gateEls = {};
+    const gatedEls = {};
+    const items = [];
+    gates.forEach((g) => {
+      gatedEls[g.key] = [];
+    });
+    const hexOrWhite = (v) => /^#[0-9a-fA-F]{6}$/.test(String(v)) ? String(v) : "#ffffff";
+    const gateOn = (key) => {
+      const el = gateEls[key];
+      return !!(el && el.checked);
+    };
+    const shownValue = (f) => {
+      if (f.ui.read === "gate" && f.ui.gate && !gateOn(f.ui.gate)) return f.default;
+      const raw = ctx.readRaw(f);
+      return raw === void 0 || raw === null ? f.default : raw;
+    };
+    const shownChecked = (g) => g.checked === "positive" ? +ctx.readRaw(g) > 0 : !!ctx.readRaw(g);
+    const writeValue = (el, f) => {
+      const v = shownValue(f);
+      el.value = v === void 0 || v === null ? "" : f.type === "color" ? hexOrWhite(v) : v;
+    };
+    const applyGates = () => {
+      gates.forEach((g) => {
+        const allow = gateOn(g.key) && (!ctx.gateEnabled || ctx.gateEnabled(g.key));
+        gatedEls[g.key].forEach((el) => {
+          el.disabled = !allow;
+        });
+      });
+    };
+    const buildInput = (f) => {
+      const input = document.createElement("input");
+      if (f.type === "color") {
+        input.type = "color";
+      } else {
+        input.type = "number";
+        if (f.min !== void 0) input.min = f.min;
+        if (f.max !== void 0) input.max = f.max;
+        if (f.step !== void 0) input.step = f.step;
+      }
+      input.id = f.ui.id;
+      input.addEventListener("input", () => ctx.onChange(f.ui.id));
+      writeValue(input, f);
+      items.push({ el: input, field: f });
+      if (f.ui.gate) gatedEls[f.ui.gate].push(input);
+      return input;
+    };
+    const buildGate = (g) => {
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.id = g.id;
+      input.checked = shownChecked(g);
+      input.addEventListener("change", () => {
+        applyGates();
+        if (ctx.onGateChange) ctx.onGateChange(g.key);
+      });
+      gateEls[g.key] = input;
+      const label = document.createElement("label");
+      if (g.className) label.className = g.className;
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(g.label || ""));
+      return label;
+    };
+    const groups = [];
+    fields.concat(gates).forEach((x) => {
+      if (groups.indexOf(x.group) < 0) groups.push(x.group);
+    });
+    groups.forEach((group) => {
+      const row = document.createElement("div");
+      row.className = "cf-row";
+      const title = document.createElement("label");
+      title.textContent = group;
+      row.appendChild(title);
+      gates.filter((g) => g.group === group).forEach((g) => row.appendChild(buildGate(g)));
+      fields.filter((f) => f.group === group).forEach((f) => {
+        if (f.ui.prefix && !f.ui.cellClass) row.appendChild(document.createTextNode(f.ui.prefix));
+        const input = buildInput(f);
+        if (f.ui.cellClass) {
+          const cell = document.createElement("span");
+          cell.className = f.ui.cellClass;
+          if (f.ui.prefix) cell.appendChild(document.createTextNode(f.ui.prefix));
+          cell.appendChild(input);
+          row.appendChild(cell);
+        } else {
+          row.appendChild(input);
+        }
+        if (f.ui.after) {
+          const note = document.createElement("span");
+          note.textContent = f.ui.after.text;
+          if (f.ui.after.style) note.setAttribute("style", f.ui.after.style);
+          row.appendChild(note);
+        }
+      });
+      container.appendChild(row);
+    });
+    applyGates();
+    const sync = () => {
+      gates.forEach((g) => {
+        const el = gateEls[g.key];
+        if (el) el.checked = shownChecked(g);
+      });
+      items.forEach(({ el, field }) => writeValue(el, field));
+      applyGates();
+    };
+    return { node: container, sync };
   }
   var paramSubscriptions = [];
   function subscribeToParams(fn, owner) {
@@ -3642,6 +3874,23 @@
   var setMoves = (arr) => {
     advancedConfig.moves = arr;
   };
+  var ADV_FORM_DECL = { gates: ADV_GATES, fields: ADV_FIELDS };
+  var advCtl = null;
+  function renderAdvancedForm() {
+    const box = $("#cf-adv-body");
+    if (!box) return;
+    box.innerHTML = "";
+    advCtl = buildFieldForm(ADV_FORM_DECL, {
+      readRaw: (f) => getByPath(advancedConfig, advFieldPath(f.key)),
+      onChange: () => readAdvancedConfig(),
+      onGateChange: () => {
+        syncAdvEnableUI();
+        readAdvancedConfig();
+      },
+      gateEnabled: () => !activePresetHasEffects()
+    });
+    box.appendChild(advCtl.node);
+  }
   function renderMoves() {
     const box = $("#cf-moves");
     if (!box) return;
@@ -3655,30 +3904,7 @@
   }
   function resetAdvancedConfig() {
     setAdvancedConfig(JSON.parse(JSON.stringify(DEFAULT_ADVANCED_CONFIG)));
-    const setVal = (id, val) => {
-      const e = $(id);
-      if (e) e.value = val;
-    };
-    setVal("#cf-adv-zindex", advancedConfig.zIndex);
-    setVal("#cf-adv-rx", advancedConfig.rotate.x);
-    setVal("#cf-adv-ry", advancedConfig.rotate.y);
-    setVal("#cf-adv-rz", advancedConfig.rotate.z);
-    setVal("#cf-adv-sx", advancedConfig.scale.x);
-    setVal("#cf-adv-sy", advancedConfig.scale.y);
-    setVal("#cf-adv-blur", advancedConfig.blur);
-    setVal("#cf-adv-shx", DEFAULT_SHADOW_PLACEHOLDER.x);
-    setVal("#cf-adv-shy", DEFAULT_SHADOW_PLACEHOLDER.y);
-    setVal("#cf-adv-shb", DEFAULT_SHADOW_PLACEHOLDER.blur);
-    setVal("#cf-adv-shc", DEFAULT_SHADOW_PLACEHOLDER.color);
-    setVal("#cf-adv-snb", DEFAULT_SHINE_PLACEHOLDER.blur);
-    setVal("#cf-adv-sns", DEFAULT_SHINE_PLACEHOLDER.size);
-    setVal("#cf-adv-snc", DEFAULT_SHINE_PLACEHOLDER.color);
-    const shOn = $("#cf-adv-sh-on");
-    if (shOn) shOn.checked = false;
-    const snOn = $("#cf-adv-sn-on");
-    if (snOn) snOn.checked = false;
-    const blurOn = $("#cf-adv-blur-on");
-    if (blurOn) blurOn.checked = false;
+    if (advCtl) advCtl.sync();
     syncAdvEnableUI();
     renderMoves();
     status("↩ 高级编辑已恢复默认", "ok");
@@ -3714,7 +3940,7 @@
     document.body.appendChild(mask);
     const body = mask.querySelector(".cf-adjust-body");
     let lastGroup = void 0;
-    ADJUSTABLE_FIELDS.forEach((f) => {
+    ADV_FIELDS.forEach((f) => {
       if (f.group !== lastGroup) {
         lastGroup = f.group;
         const t = document.createElement("div");
@@ -3748,7 +3974,7 @@
     readAdvancedConfig();
     openAdjustablePicker((checkedKeys) => {
       const chosen = new Set(checkedKeys);
-      const params = ADJUSTABLE_FIELDS.filter((f) => chosen.has(f.key)).map((f) => {
+      const params = ADV_FIELDS.filter((f) => chosen.has(f.key)).map((f) => {
         const p = { key: f.key, label: f.label, type: f.type, group: f.group };
         if (f.min !== void 0) p.min = f.min;
         if (f.max !== void 0) p.max = f.max;
@@ -3828,26 +4054,11 @@
     $("#cf-danmaku-pick").addEventListener("click", pickManualTime);
     $("#cf-danmaku-preview").addEventListener("click", previewManual);
     $("#cf-danmaku-send").addEventListener("click", sendManual);
+    renderAdvancedForm();
     $("#cf-fold-adv").addEventListener("click", toggleAdvFold);
     $("#cf-adv-reset").addEventListener("click", resetAdvancedConfig);
     $("#cf-move-add").addEventListener("click", addMove);
     $("#cf-export-advanced").addEventListener("click", exportAdvancedPreset);
-    ["#cf-adv-zindex", "#cf-adv-rx", "#cf-adv-ry", "#cf-adv-rz", "#cf-adv-sx", "#cf-adv-sy", "#cf-adv-blur", "#cf-adv-shx", "#cf-adv-shy", "#cf-adv-shb", "#cf-adv-shc", "#cf-adv-snb", "#cf-adv-sns", "#cf-adv-snc"].forEach((sel) => {
-      const el = $(sel);
-      if (el) el.addEventListener("input", readAdvancedConfig);
-    });
-    $("#cf-adv-sh-on").addEventListener("change", () => {
-      syncAdvEnableUI();
-      readAdvancedConfig();
-    });
-    $("#cf-adv-sn-on").addEventListener("change", () => {
-      syncAdvEnableUI();
-      readAdvancedConfig();
-    });
-    $("#cf-adv-blur-on").addEventListener("change", () => {
-      syncAdvEnableUI();
-      readAdvancedConfig();
-    });
     syncAdvEnableUI();
     renderMoves();
     $("#cf-fold").addEventListener("click", toggleFold);

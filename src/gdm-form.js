@@ -2,6 +2,7 @@
     //  参数表单渲染层（schema → 控件 DOM 的唯一出口）
     // ============================================================
     // 理解卡｜我拥有：buildParamControl（param 声明 → 控件，返回 { node, sync }；type:'list' 另有 add）、
+    //   buildFieldForm（字段组声明 → 一整段带 id / 门控 / 行内多单元的固定表单，返回 { node, sync }）、
     //   订阅注册表（subscribeToParams / clearParamSubscriptions）、引擎参数声明的纯查询
     //   （activeCompositionOf / validateComposition / activeEngineParamKeys / filterOptionsByKeys）。
     // 我承诺：DOM 形状与样式稳定——单值控件只产出 div.cf-row > label + input，**行类名由调用方追加**
@@ -11,7 +12,8 @@
     //   list 控件的所有类名（容器/每项/按钮/子区/输入框）一律来自声明，本模块不硬编码任何 cf- 类名；
     //   sync() 幂等——重读 get() 并按与首次构建**完全相同**的回退规则回写控件显示，重复执行无副作用。
     // 我永不：不持状态（参数真源是 preset.options / preset.effects 与 devDraft.options，本模块不建 store）；
-    //   不发网络请求、不读播放器；不在重建容器时留着上一轮的订阅（重建前必须 clearParamSubscriptions）。
+    //   不发网络请求、不读播放器；不在重建容器时留着上一轮的订阅（重建前必须 clearParamSubscriptions）；
+    //   buildFieldForm 不写值（头注：一份值两条写路径正是这类按 id 回读的表单要消灭的东西）。
     // 改我前读：schema 真源是 50-engine.js 的 ENGINES[stage][name].params（与 10-constants 的
     //   BUILTIN_PRESETS[].params）——本模块认识 number / select / color / checkbox / text / list 六种控件，
     //   声明里出现第七种必须红灯（test/unit/form.test.mjs 的类型覆盖断言，学自 svfeed）；
@@ -20,7 +22,10 @@
     //   控件语义，**不是** 40-core 的 num()，别替换；`effects.` 前缀必须经 paramTarget 返回本体引用，
     //   浅拷贝会让改动不生效（旧故障：参数改了但间距/颜色没反应）；
     //   list 的子字段另有 **nullable** 语义（空串 ⇒ null，与 number 分支相反），见 buildListControl 头注。
-    //   本片新增 list（可增删列表，运动轨迹用）；复合三连 X-Y-Z / 枚举网格 anchor / 依赖禁用态留给后续分片。
+    //   buildFieldForm 是「按 id 回读的固定表单」那一支（弹幕模式的高级编辑区），与 buildParamControl
+    //   刻意不同：**必须有 id**（id 就是回读契约）、值只读不写（DOM 是取值真源）——对照见其头注。
+    //   6.11.0 片新增 list（可增删列表，运动轨迹用）；6.12.0 片新增 buildFieldForm（id + 门控 + 行内多单元）；
+    //   复合三连 X-Y-Z / 枚举网格 anchor 等剩余分片按同一条路线走。
 
 import { status } from './20-utils.js';
 import { COMPOSITIONS, ENGINES, STAGES } from './50-engine.js';
@@ -337,6 +342,146 @@ import { COMPOSITIONS, ENGINES, STAGES } from './50-engine.js';
     }
 
     // ============================================================
+    //  声明驱动的字段组（id + 门控 + 行内多单元）——按 id 回读的固定表单用
+    // ============================================================
+    // 与 buildParamControl 的分工：那一个给「预设区 / dev 面板的参数」用（不设 id，值走 get/set）；
+    // 这一个给「按 id 回读的固定表单」用（**必须有 id**，值只读不写）。声明形状（类名/文案/id/前缀
+    // 全部由调用方给出，本模块只认「行 / 单元 / 控件」三层；硬编码的类名只有行容器 cf-row）：
+    //   { containerClass?,
+    //     gates:  [ { key, id, type: 'checkbox', label, group, className?, checked } ],
+    //     fields: [ { key, type, min?, max?, step?, default?, group,
+    //                 ui: { id, prefix?, cellClass?, read, gate?, after? } } ] }
+    //   · group    —— 行标题（<label> 文案）与行序：同 group 的字段排进同一个 div.cf-row（首次出现即建行）；
+    //                 gates 里同 group 的门插在该行**行首**（旧模板「投影：启用 + 3 数值 + 色」）
+    //   · ui.id    —— 控件 id（回读契约，不可省）
+    //   · ui.cellClass / ui.prefix —— 行内单元：包裹元素 + 前缀文本
+    //                 （`<span class="…">X<input></span>` 这类三连的通用表达；不传 cellClass 则前缀直接进行）
+    //   · ui.read  —— 值回退链（两条，故意不统一，见 35-adv-fields 的字段注释）：
+    //                 'value' 显示 raw ?? default；'gate' 门关显示 default、门开显示 raw ?? default
+    //   · ui.gate  —— 门控：门关时该控件 disabled；门开关变化与 sync() 都实时重算
+    //   · ui.after —— 控件紧后的说明 span（{ text, style }，沿用 list 控件 after 的形状）
+    //   · 事件择取：number / color 绑 `input`（每敲一键即回调），checkbox 门绑 `change`——
+    //     与旧手写模板在 95-events 里的接线**逐条一致**（那边也是 14 个 input + 3 个 checkbox change）
+    //   ctx = {
+    //     readRaw(field)     读该字段的存储值（声明条目原样传入，读什么由调用方决定；null/undefined 由本模块落回 default）
+    //     onChange(id)       值变化后回调
+    //     onGateChange(key)  门开关变化后回调（先按声明落禁用态，再回调）
+    //     gateEnabled?(key)  门被允许放开吗（默认恒 true）。**门只放行到这一步允许的程度**——
+    //                        高级编辑区被预设接管时传 false，否则门会顶掉预设接管的禁用态
+    //   }
+    // 值语义：本控件只负责「显示」与「报告变化」，**不写值**——值由调用方经 ctx.readRaw 现读、变化后自己
+    //   去回读（弹幕模式的 17 个控件即如此：DOM 是高级字段的取值真源，改动一律回 readAdvancedConfig 整份回读）。
+    //   所以这里没有 buildParamControl 的 set：「一份值两条写路径」正是这一片要消灭的东西。
+    // 返回 { node, sync }；sync() 重读 readRaw，按与首次构建**完全相同**的回退规则回写显示并重算禁用态（幂等）。
+    function buildFieldForm(decl, ctx) {
+        const container = document.createElement('div');
+        if (decl.containerClass) container.className = decl.containerClass;
+        const gates = decl.gates || [];
+        const fields = decl.fields || [];
+        const gateEls = {};      // 门 key → 开关 checkbox
+        const gatedEls = {};     // 门 key → 受它管制的控件
+        const items = [];        // [{ el, field }]：sync 回写显示的清单
+        gates.forEach((g) => { gatedEls[g.key] = []; });
+
+        const hexOrWhite = (v) => (/^#[0-9a-fA-F]{6}$/.test(String(v)) ? String(v) : '#ffffff');
+        const gateOn = (key) => { const el = gateEls[key]; return !!(el && el.checked); };
+        // 值的唯一落点：raw 为 null/undefined 落回 default；门控字段门关时直接给 default。
+        // （default 可以是 0 或 '#000000'，故不能写 || ，必须显式判空）
+        const shownValue = (f) => {
+            if (f.ui.read === 'gate' && f.ui.gate && !gateOn(f.ui.gate)) return f.default;
+            const raw = ctx.readRaw(f);
+            return (raw === undefined || raw === null) ? f.default : raw;
+        };
+        // 门上「勾选」的判据也来自声明（模糊是 >0，投影/外发光是 !!）
+        const shownChecked = (g) => (g.checked === 'positive' ? (+ctx.readRaw(g) > 0) : !!ctx.readRaw(g));
+        const writeValue = (el, f) => {
+            const v = shownValue(f);
+            el.value = (v === undefined || v === null) ? '' : (f.type === 'color' ? hexOrWhite(v) : v);
+        };
+        const applyGates = () => {
+            gates.forEach((g) => {
+                const allow = gateOn(g.key) && (!ctx.gateEnabled || ctx.gateEnabled(g.key));
+                gatedEls[g.key].forEach((el) => { el.disabled = !allow; });
+            });
+        };
+
+        const buildInput = (f) => {
+            const input = document.createElement('input');
+            if (f.type === 'color') {
+                input.type = 'color';
+            } else {
+                input.type = 'number';
+                if (f.min !== undefined) input.min = f.min;
+                if (f.max !== undefined) input.max = f.max;
+                if (f.step !== undefined) input.step = f.step;
+            }
+            input.id = f.ui.id;
+            input.addEventListener('input', () => ctx.onChange(f.ui.id));
+            writeValue(input, f);
+            items.push({ el: input, field: f });
+            if (f.ui.gate) gatedEls[f.ui.gate].push(input);
+            return input;
+        };
+
+        const buildGate = (g) => {
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.id = g.id;
+            input.checked = shownChecked(g);
+            input.addEventListener('change', () => {
+                applyGates();                              // 门先落地，再回调（回调里会整份回读）
+                if (ctx.onGateChange) ctx.onGateChange(g.key);
+            });
+            gateEls[g.key] = input;
+            const label = document.createElement('label');
+            if (g.className) label.className = g.className;
+            label.appendChild(input);
+            label.appendChild(document.createTextNode(g.label || ''));
+            return label;
+        };
+
+        // 行序 = group 首次出现的顺序（字段声明顺序即行序；门只负责插进自己那一行）
+        const groups = [];
+        fields.concat(gates).forEach((x) => { if (groups.indexOf(x.group) < 0) groups.push(x.group); });
+        groups.forEach((group) => {
+            const row = document.createElement('div');
+            row.className = 'cf-row';
+            const title = document.createElement('label');
+            title.textContent = group;
+            row.appendChild(title);
+            gates.filter((g) => g.group === group).forEach((g) => row.appendChild(buildGate(g)));
+            fields.filter((f) => f.group === group).forEach((f) => {
+                if (f.ui.prefix && !f.ui.cellClass) row.appendChild(document.createTextNode(f.ui.prefix));
+                const input = buildInput(f);
+                if (f.ui.cellClass) {
+                    const cell = document.createElement('span');
+                    cell.className = f.ui.cellClass;
+                    if (f.ui.prefix) cell.appendChild(document.createTextNode(f.ui.prefix));
+                    cell.appendChild(input);
+                    row.appendChild(cell);
+                } else {
+                    row.appendChild(input);
+                }
+                if (f.ui.after) {
+                    const note = document.createElement('span');
+                    note.textContent = f.ui.after.text;
+                    if (f.ui.after.style) note.setAttribute('style', f.ui.after.style);
+                    row.appendChild(note);
+                }
+            });
+            container.appendChild(row);
+        });
+        applyGates();      // 初值：门关着的控件一律 disabled（与旧模板的 disabled 初值同规则）
+        // sync() = 重读 + 按同一回退规则回写显示 + 重算禁用态（幂等；值怎么写仍由调用方决定）
+        const sync = () => {
+            gates.forEach((g) => { const el = gateEls[g.key]; if (el) el.checked = shownChecked(g); });
+            items.forEach(({ el, field }) => writeValue(el, field));
+            applyGates();
+        };
+        return { node: container, sync };
+    }
+
+    // ============================================================
     //  订阅注册表：控件 sync 的登记处
     //  纪律——消费方在重建容器**前**先 clearParamSubscriptions(owner)，重建后再逐个 subscribeToParams(sync, owner)。
     //  注册表按 owner 分区（owner 用容器元素或容器标识）：dev 面板一轮渲染要重建 5 个阶段框，
@@ -400,6 +545,6 @@ import { COMPOSITIONS, ENGINES, STAGES } from './50-engine.js';
 
 // —— ESM 导出（6.10.0 从 90-preset-ui 抽出：表单渲染层的唯一出口）——
 export {
-    activeCompositionOf, activeEngineParamKeys, buildParamControl, clearParamSubscriptions,
+    activeCompositionOf, activeEngineParamKeys, buildFieldForm, buildParamControl, clearParamSubscriptions,
     filterOptionsByKeys, subscribeToParams, validateComposition,
 };
