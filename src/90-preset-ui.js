@@ -760,10 +760,11 @@ import {
 
 // —— ESM 导出（6.8.0 迁移）——
 export {
-    deleteCurrentPreset, exportAllPresets, exportCurrentPreset, importPreset, loadPresetFile,
+    deleteCurrentPreset, downloadJson, exportAllPresets, exportCurrentPreset, importPreset, loadPresetFile,
     loadSub2File, onPresetChange, openDevPanel, openExportDialog, restoreActivePresetOptions,
     saveActivePresetOptions, syncAdvEnableUI, updatePresetUI,
 };
+// downloadJson 6.15.0 起对外（闸④ 台账视图 gdm-ledger-ui 复用它导出台账 JSON）：JSON 下载只有这一份实现。
 // 仅供冒烟测试（smoke #1–8 预设校验/导出/草稿还原）：不对其它 src 模块开放
 // （activeEngineParamKeys / filterOptionsByKeys 6.10.0 随 gdm-form 迁出，冒烟测试改从该模块取）
 export {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AcFun 高级弹幕层编辑器 (ADL)
 // @namespace    https://github.com/acfun-danmaku-sender
-// @version      6.14.0
+// @version      6.15.0
 // @description  视频的高级弹幕层编辑器：给视频加一条可发布的字幕/特效轨道，所见即所得，发送只是导出。导入 SRT/ASS/LRC，预设特效，彩排通过才可导出。
 // @author       name_xxl
 // @match        *://www.acfun.cn/v/ac*
@@ -1628,6 +1628,220 @@
     return { subtitleCount: list.length, modelCount, problems, expandErrors };
   }
 
+  // src/gdm-ledger.js
+  var LEDGER_KEY = "ledger";
+  var LEDGER_STORE_KEY = "cf_sub_" + LEDGER_KEY;
+  var LEDGER_VERSION = 1;
+  var LEDGER_WRITE_ERROR_KEY = "ledgerWriteError";
+  var LEDGER_MAX_ENTRIES = 1e3;
+  var LEDGER_MAX_BYTES = 256 * 1024;
+  var LEDGER_WRITE_RETRIES = 3;
+  var LEDGER_DROP_RATIO = 0.25;
+  var LEDGER_STATUS_PENDING = "pending";
+  var LEDGER_STATUS_VERIFIED = "verified";
+  var LEDGER_STATUS_LABELS = { pending: "待审核（未确认）", verified: "已确认可见" };
+  var cache = null;
+  var writeState = { ok: true, lastError: null, dropped: 0, at: 0 };
+  function serialize(entries) {
+    return JSON.stringify({ v: LEDGER_VERSION, entries });
+  }
+  function emptyRaw() {
+    return serialize([]);
+  }
+  function pickNum(v, d) {
+    if (v === null || v === void 0 || v === "") return d;
+    const n = Number(v);
+    return isFinite(n) ? n : d;
+  }
+  function load() {
+    if (cache) return cache;
+    let arr = [];
+    try {
+      const raw = storeGet(LEDGER_KEY, "");
+      if (raw) {
+        const j = JSON.parse(raw);
+        const list = Array.isArray(j) ? j : j && Array.isArray(j.entries) ? j.entries : [];
+        arr = list.filter((e) => e && typeof e === "object");
+      }
+    } catch (e) {
+      arr = [];
+    }
+    cache = arr;
+    return cache;
+  }
+  function normalize(entry) {
+    const e = entry && typeof entry === "object" ? entry : {};
+    return {
+      danmakuId: String(e.danmakuId == null ? "" : e.danmakuId),
+      content: String(e.content == null ? "" : e.content),
+      vid: e.vid === null || e.vid === void 0 ? "" : e.vid,
+      bangumi: !!e.bangumi,
+      sentAt: pickNum(e.sentAt, Date.now()),
+      startTime: pickNum(e.startTime, null),
+      presetId: String(e.presetId == null ? "" : e.presetId),
+      presetName: String(e.presetName == null ? "" : e.presetName),
+      verified: !!e.verified,
+      verifiedAt: pickNum(e.verifiedAt, null)
+    };
+  }
+  function fitLimits(entries) {
+    let dropped = 0;
+    while (entries.length > LEDGER_MAX_ENTRIES) {
+      entries.shift();
+      dropped++;
+    }
+    let raw = serialize(entries);
+    let guard = 0;
+    while (entries.length > 1 && raw.length > LEDGER_MAX_BYTES && guard++ < 32) {
+      const avg = Math.max(1, Math.floor(raw.length / entries.length));
+      const n = Math.min(entries.length - 1, Math.max(1, Math.ceil((raw.length - LEDGER_MAX_BYTES) / avg)));
+      entries.splice(0, n);
+      dropped += n;
+      raw = serialize(entries);
+    }
+    return { dropped, raw };
+  }
+  function persist(entries) {
+    const fit = fitLimits(entries);
+    let dropped = fit.dropped;
+    const kept = entries.slice();
+    let raw = fit.raw;
+    for (let i = 0; i < LEDGER_WRITE_RETRIES; i++) {
+      storeSet(LEDGER_KEY, raw);
+      if (storeGet(LEDGER_KEY, null) === raw) {
+        if (writeState.ok === false) storeSet(LEDGER_WRITE_ERROR_KEY, "");
+        writeState = { ok: true, lastError: null, dropped, at: Date.now() };
+        return { ok: true, dropped };
+      }
+      if (entries.length <= 1) break;
+      const n = Math.min(entries.length - 1, Math.max(1, Math.ceil(entries.length * LEDGER_DROP_RATIO)));
+      entries.splice(0, n);
+      dropped += n;
+      raw = serialize(entries);
+    }
+    entries.length = 0;
+    kept.forEach((e) => entries.push(e));
+    const reason = "台账写入失败（localStorage 配额可能已满），本页仍有记录但刷新后会丢";
+    writeState = { ok: false, lastError: reason, dropped, at: Date.now() };
+    storeSet(LEDGER_WRITE_ERROR_KEY, JSON.stringify({ at: writeState.at, reason, dropped }));
+    return { ok: false, dropped, reason };
+  }
+  function ledgerRecord(entry) {
+    const rec = normalize(entry);
+    const entries = load();
+    if (rec.danmakuId) {
+      const dup = entries.find((e) => e.danmakuId === rec.danmakuId);
+      if (dup) {
+        let touched = false;
+        if (!dup.presetName && rec.presetName) {
+          dup.presetName = rec.presetName;
+          touched = true;
+        }
+        const res2 = touched ? persist(entries) : { ok: writeState.ok, dropped: 0 };
+        return { ok: res2.ok, entry: dup, deduped: true, dropped: res2.dropped, reason: res2.reason };
+      }
+    }
+    entries.push(rec);
+    const res = persist(entries);
+    return { ok: res.ok, entry: rec, deduped: false, dropped: res.dropped, reason: res.reason };
+  }
+  function ledgerList() {
+    return load().slice();
+  }
+  function ledgerByVideo() {
+    const groups = /* @__PURE__ */ new Map();
+    load().forEach((e) => {
+      const key = String(e.vid);
+      if (!groups.has(key)) {
+        groups.set(key, {
+          vid: e.vid,
+          url: ledgerVideoUrl(e),
+          count: 0,
+          verifiedCount: 0,
+          firstAt: e.sentAt,
+          lastAt: e.sentAt,
+          entries: []
+        });
+      }
+      const g = groups.get(key);
+      g.entries.push(e);
+      g.count++;
+      if (e.sentAt < g.firstAt) g.firstAt = e.sentAt;
+      if (e.sentAt > g.lastAt) g.lastAt = e.sentAt;
+      if (e.verified) g.verifiedCount++;
+      if (!g.url) g.url = ledgerVideoUrl(e);
+    });
+    return Array.from(groups.values()).sort((a, b) => b.lastAt - a.lastAt);
+  }
+  function ledgerMarkVerified(ids) {
+    let list = [];
+    if (typeof ids === "string") list = [ids];
+    else if (Array.isArray(ids)) list = ids;
+    else if (ids && typeof ids.forEach === "function") {
+      ids.forEach((x) => list.push(x));
+    }
+    const set = new Set(list.map((x) => String(x)).filter(Boolean));
+    if (!set.size) return 0;
+    const at = Date.now();
+    let n = 0;
+    load().forEach((e) => {
+      if (e.danmakuId && set.has(e.danmakuId) && !e.verified) {
+        e.verified = true;
+        e.verifiedAt = at;
+        n++;
+      }
+    });
+    if (n) persist(load());
+    return n;
+  }
+  function ledgerClear() {
+    const cleared = load().length;
+    cache = [];
+    storeSet(LEDGER_KEY, emptyRaw());
+    const ok = storeGet(LEDGER_KEY, null) === emptyRaw();
+    if (ok) storeSet(LEDGER_WRITE_ERROR_KEY, "");
+    writeState = { ok, lastError: ok ? null : "台账清空失败（localStorage 写入被拒）", dropped: 0, at: Date.now() };
+    return { ok, cleared };
+  }
+  function ledgerStats() {
+    const entries = load();
+    return {
+      count: entries.length,
+      verified: entries.filter((e) => e.verified).length,
+      bytes: serialize(entries).length,
+      maxEntries: LEDGER_MAX_ENTRIES,
+      maxBytes: LEDGER_MAX_BYTES,
+      write: writeState
+    };
+  }
+  function ledgerStatusOf(entry) {
+    return entry && entry.verified ? LEDGER_STATUS_VERIFIED : LEDGER_STATUS_PENDING;
+  }
+  function ledgerStatusLabel(entry) {
+    return LEDGER_STATUS_LABELS[ledgerStatusOf(entry)];
+  }
+  function ledgerVideoUrl(entry) {
+    const e = entry || {};
+    const id = e.vid === null || e.vid === void 0 || e.vid === "" ? "" : e.vid;
+    if (!id) return "";
+    return (e.bangumi ? "https://www.acfun.cn/bangumi/aa" : "https://www.acfun.cn/v/ac") + id;
+  }
+  function fmtStamp(ts) {
+    const pad = (n) => String(n).padStart(2, "0");
+    const d = new Date(pickNum(ts, 0));
+    return pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+  }
+  function ledgerChecklistText(entries) {
+    const list = Array.isArray(entries) ? entries : load();
+    return list.map((e) => [
+      fmtStamp(e.sentAt),
+      ledgerStatusLabel(e),
+      "pos " + (e.startTime == null ? "?" : (e.startTime / 1e3).toFixed(3) + "s"),
+      e.content,
+      "id=" + (e.danmakuId || "(未返回)")
+    ].join(" | ")).join("\n");
+  }
+
   // src/60-network.js
   function gmPost(url, data) {
     return new Promise((resolve, reject) => {
@@ -1688,18 +1902,38 @@
       const id = String(j.danmakuId || "");
       log("✅ 发送成功 danmakuId=" + id);
       if (id) lastSentIds.push(id);
-      return true;
+      return { ok: true, id, videoId: v.videoId };
     }
     const code = j ? j.result : "HTTP " + resp.status;
     throw new Error(RESULT_MSG[code] || j && j.error_msg || "result=" + code);
+  }
+  function ledgerRecordSentModel(model, ret) {
+    try {
+      const v = getVideoInfo();
+      const preset = getActivePreset();
+      const id = ret && typeof ret === "object" && ret.id != null ? String(ret.id) : "";
+      return ledgerRecord({
+        danmakuId: id,
+        content: model && model.content || "",
+        vid: v && v.videoId || 0,
+        bangumi: !!(v && v.bangumi),
+        startTime: model && model.startTime != null ? model.startTime : null,
+        presetId: preset && preset.id || "",
+        presetName: preset && preset.name || ""
+      });
+    } catch (e) {
+      log("⚠ 台账记录失败（不影响发送）: " + e.message);
+      return null;
+    }
   }
   async function sendDanmaku(sub, cfg, seq, prevTime) {
     const models = expandSub(sub, cfg, calcDurationMs(subs.indexOf(sub)), seq, prevTime);
     let sent = 0;
     for (let i = 0; i < models.length; i++) {
       if (cancelled) break;
-      await sendModel(models[i]);
+      const ret = await sendModel(models[i]);
       sent++;
+      ledgerRecordSentModel(models[i], ret);
       if (i < models.length - 1 && !cancelled) await sleep(MODEL_SEND_INTERVAL);
     }
     return { sent, total: models.length };
@@ -1749,7 +1983,8 @@
       const mine = mineById.length ? mineById : uid ? adv.filter((d) => String(d.userId) === String(uid)) : [];
       const uniqueKey = (d) => d.body + "@" + d.position;
       const uniqueCount = new Set(mine.map(uniqueKey)).size;
-      log("🔍 全片扫描：时长=" + durMs / 1e3 + "s，分段=" + segCount + "，高级弹幕总数=" + adv.length + "，你的弹幕=" + mine.length + "（去重后 " + uniqueCount + " 条）");
+      const marked = ledgerMarkVerified(mine.map((d) => String(d.danmakuId)));
+      log("🔍 全片扫描：时长=" + durMs / 1e3 + "s，分段=" + segCount + "，高级弹幕总数=" + adv.length + "，你的弹幕=" + mine.length + "（去重 " + uniqueCount + " 条，台账确认 " + marked + " 条）");
       if (mine.length) {
         status(`✅ 全片高级弹幕 ${adv.length} 条，其中你的 ${mine.length} 条（去重 ${uniqueCount} 条）`, "ok");
         mine.slice(0, 12).forEach((d) => log("   ✓ danmakuId=" + d.danmakuId + " body=" + d.body + " position=" + d.position));
@@ -1757,7 +1992,7 @@
         status(`全片有 ${adv.length} 条高级弹幕，但都不是你的`, "busy");
         adv.slice(0, 10).forEach((d) => log("   · danmakuId=" + d.danmakuId + " body=" + d.body + " position=" + d.position + " user=" + d.userId));
       } else {
-        status("⚠️ 全片未查到高级弹幕（可能仍在审核延迟，或接口返回受限）", "err");
+        status("⚠️ 全片未查到高级弹幕（可能仍在审核延迟，或接口返回受限）——这不等于发送失败，台账里仍是「待审核（未确认）」", "busy");
       }
     } catch (e) {
       status("验证失败: " + e.message, "err");
@@ -2370,6 +2605,7 @@
             <div class="cf-actions-row">
                 <button type="button" class="cf-btn cf-btn-p" id="cf-send">▶ 发送全部</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-verify">🔍 验证已发</button>
+                <button type="button" class="cf-btn cf-btn-b" id="cf-ledger-btn" title="闸④ 台账：本次及以往发送成功的弹幕逐条记录（时间 / 内容 / danmakuId / 视频），可回查、可导出、可引导手动清理（本工具删不了弹幕）">📋 台账</button>
                 <label class="cf-interval">发送间隔
                     <input type="number" id="cf-interval" min="0" max="60000" step="100" value="${sendInterval}"> ms
                 </label>
@@ -4056,7 +4292,10 @@
     const cfg = cfgFor(sub);
     try {
       const models = expandSub(sub, cfg, sub.duration || DEFAULT_DURATION, 1);
-      for (const m of models) await sendModel(m);
+      for (const m of models) {
+        const ret = await sendModel(m);
+        ledgerRecordSentModel(m, ret);
+      }
       status(`✅ 已发送：${text.trim()} @ ${fmt(Math.max(0, sub.time + timeOffset))}（${Math.round((sub.duration || DEFAULT_DURATION) / 1e3)}s）`, "ok");
       const inp = $("#cf-danmaku-text");
       if (inp) inp.value = "";
@@ -4353,6 +4592,122 @@
     });
   }
 
+  // src/gdm-ledger-ui.js
+  var CLEAR_ARM_MS = 5e3;
+  function guideText(video) {
+    const id = String(video.vid == null ? "" : video.vid);
+    return "<b>本工具无法删除已发送的弹幕</b>：A 站没有提供删除接口（API.md §十一 列的弹幕接口里没有 delete，§九 末亦记「预览残留无法按 id 删除」）。清理只能手动，路径是：① 点上方 ac" + escapeHtml(id) + " 的链接打开视频页 → ② 在画面上定位该条（下方清单给了时间/内容/danmakuId）→ ③ 用 A 站的弹幕管理入口手动删除。<br><b>速率限制未知</b>：本工具不掌握 A 站的删除/发送速率上限（API.md 与 RISKS.md 均无出处），批量清理请自己把握节奏。<br><b>状态只是「我们看见过没有」</b>：待审核（未确认）= 发送成功但全片扫描还没查到（审核延迟或接口受限都会这样），<b>不等于失败</b>。下面是本视频的核对清单，可直接复制：";
+  }
+  function itemHtml(e) {
+    const label = ledgerStatusLabel(e);
+    const cls = ledgerStatusOf(e) === "verified" ? "verified" : "pending";
+    const id = e.danmakuId ? "#" + escapeHtml(e.danmakuId) : "未返回 id";
+    return '<div class="cf-lg-item"><span class="cf-lg-badge ' + cls + '">' + escapeHtml(label) + '</span><span class="cf-lg-time">' + escapeHtml(fmtStamp(e.sentAt)) + '</span><span class="cf-lg-content" title="' + escapeHtml(e.content) + '">' + escapeHtml(e.content) + '</span><span class="cf-lg-id">' + id + "</span></div>";
+  }
+  function videoBlock(group) {
+    const box = document.createElement("div");
+    box.className = "cf-lg-video";
+    const head = group.url ? '<a class="cf-lg-link" href="' + escapeHtml(group.url) + '" target="_blank" rel="noopener">ac' + escapeHtml(String(group.vid)) + "</a>" : '<span class="cf-lg-link">视频 ' + escapeHtml(String(group.vid)) + "（无 id）</span>";
+    box.innerHTML = '<div class="cf-lg-head">' + head + '<span class="cf-lg-meta">' + group.count + " 条 · 已确认 " + group.verifiedCount + " · " + escapeHtml(fmtStamp(group.firstAt)) + " ~ " + escapeHtml(fmtStamp(group.lastAt)) + '</span><button type="button" class="cf-lg-btn" data-act="guide">🧹 清理引导</button></div><div class="cf-lg-guide" style="display:none"></div><div class="cf-lg-list">' + group.entries.map(itemHtml).join("") + "</div>";
+    const btn = box.querySelector("[data-act=guide]");
+    const guide = box.querySelector(".cf-lg-guide");
+    let open = false;
+    btn.addEventListener("click", () => {
+      open = !open;
+      if (!open) {
+        guide.style.display = "none";
+        btn.textContent = "🧹 清理引导";
+        return;
+      }
+      guide.innerHTML = '<div class="cf-lg-guide-text">' + guideText(group) + '</div><textarea class="cf-lg-checklist" readonly spellcheck="false"></textarea>';
+      guide.querySelector(".cf-lg-checklist").value = ledgerChecklistText(group.entries);
+      guide.style.display = "";
+      btn.textContent = "▲ 收起引导";
+    });
+    return box;
+  }
+  function renderLedger(mask) {
+    const statsEl = mask.querySelector("#cf-lg-stats");
+    const body = mask.querySelector("#cf-lg-body");
+    const st = ledgerStats();
+    statsEl.textContent = "共 " + st.count + " 条（已确认可见 " + st.verified + " · 待审核 " + (st.count - st.verified) + "）· 占用约 " + Math.round(st.bytes / 1024) + "KB / 上限 " + st.maxEntries + " 条 · " + Math.round(st.maxBytes / 1024) + "KB" + (st.write.ok ? "" : " · ⚠ " + st.write.lastError);
+    statsEl.className = "cf-lg-stats" + (st.write.ok ? "" : " bad");
+    body.innerHTML = "";
+    const groups = ledgerByVideo();
+    if (!groups.length) {
+      body.innerHTML = '<div class="cf-lg-empty">台账为空：还没有记录到发送成功的弹幕。<br>发送一次之后回到这里，就能看到每条弹幕的时间、内容、danmakuId 与状态。</div>';
+      return;
+    }
+    groups.forEach((g) => body.appendChild(videoBlock(g)));
+  }
+  function openLedgerPanel() {
+    const old = $("#cf-ledger-panel");
+    if (old) old.remove();
+    const mask = document.createElement("div");
+    mask.id = "cf-ledger-panel";
+    mask.className = "cf-dev-panel-mask";
+    mask.innerHTML = `
+            <div class="cf-dev-dlg cf-lg-dlg">
+                <p class="cf-dev-title">📋 发送台账（闸④）</p>
+                <p class="cf-dev-sub">每次发送成功的弹幕逐条记录（时间 / 内容 / danmakuId / 视频）。
+                    <b>本工具不能删除已发送的弹幕</b>——A 站没有删除接口，清理要你到视频页手动做（点各视频右侧的「🧹 清理引导」）。</p>
+                <p class="cf-lg-stats" id="cf-lg-stats"></p>
+                <div class="cf-lg-body" id="cf-lg-body"></div>
+                <div class="cf-dev-foot">
+                    <button type="button" class="cf-lg-btn" data-act="close">关闭</button>
+                    <button type="button" class="cf-lg-btn" data-act="export">📤 导出 JSON</button>
+                    <button type="button" class="cf-lg-btn cf-lg-danger" data-act="clear">🗑 清空台账</button>
+                </div>
+            </div>`;
+    document.body.appendChild(mask);
+    renderLedger(mask);
+    mask.querySelector("[data-act=close]").addEventListener("click", () => mask.remove());
+    mask.addEventListener("click", (e) => {
+      if (e.target === mask) mask.remove();
+    });
+    mask.querySelector("[data-act=export]").addEventListener("click", () => {
+      const entries = ledgerList();
+      if (!entries.length) {
+        status("台账为空，没有可导出的记录", "err");
+        return;
+      }
+      const st = ledgerStats();
+      downloadJson("弹幕台账-" + fmtStamp(Date.now()).replace(/[-: ]/g, "") + ".json", {
+        exportedAt: Date.now(),
+        exportedAtText: fmtStamp(Date.now()),
+        count: entries.length,
+        limits: { maxEntries: st.maxEntries, maxBytes: st.maxBytes },
+        note: "本工具无法删除已发送的弹幕：A 站没有删除接口（API.md §十一 / §九 末），清理只能到视频页手动做。「待审核（未确认）」不等于失败——审核延迟或接口受限都会让全片扫描查不到。",
+        entries
+      });
+      status("📤 已导出台账 " + entries.length + " 条", "ok");
+    });
+    const clearBtn = mask.querySelector("[data-act=clear]");
+    let timer = null;
+    const disarm = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      clearBtn.dataset.armed = "";
+      clearBtn.classList.remove("armed");
+      clearBtn.textContent = "🗑 清空台账";
+    };
+    clearBtn.addEventListener("click", () => {
+      if (clearBtn.dataset.armed !== "1") {
+        clearBtn.dataset.armed = "1";
+        clearBtn.classList.add("armed");
+        clearBtn.textContent = "⚠ 再点一次确认清空（" + ledgerStats().count + " 条）";
+        timer = setTimeout(disarm, CLEAR_ARM_MS);
+        return;
+      }
+      disarm();
+      const r = ledgerClear();
+      renderLedger(mask);
+      status(r.ok ? "🗑 已清空台账（" + r.cleared + " 条）" : "⚠ 台账清空失败（localStorage 写入被拒）", r.ok ? "ok" : "err");
+    });
+  }
+
   // src/95-events.js
   function bindEvents() {
     const p = ensurePanel();
@@ -4368,6 +4723,7 @@
     });
     $("#cf-send").addEventListener("click", startSend);
     $("#cf-verify").addEventListener("click", verifySent);
+    $("#cf-ledger-btn").addEventListener("click", openLedgerPanel);
     $("#cf-reset").addEventListener("click", resetAll);
     $("#cf-preview-all").addEventListener("click", previewAll);
     $("#cf-offline-preview").addEventListener("change", (e) => {
@@ -4713,6 +5069,34 @@
         #cf-entry-group .cf-entry-btn:hover{background:#fd4c5d;color:#fff}
         #cf-entry-group .cf-default-chk{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:#666;cursor:pointer;white-space:nowrap}
         #cf-entry-group .cf-default-chk input{accent-color:#fd4c5d;cursor:pointer}
+        /* 闸④ 台账视图（gdm-ledger-ui.openLedgerPanel；外壳复用 .cf-dev-panel-mask/.cf-dev-dlg。
+           全部选择器前缀 #cf-ledger-panel：浮层挂在 body 上，拿不到 #cf-sub-panel 的那套样式） */
+        #cf-ledger-panel *{box-sizing:border-box}
+        #cf-ledger-panel .cf-lg-dlg{width:560px}
+        #cf-ledger-panel .cf-lg-stats{font-size:11px;color:#999;padding:0 14px 8px;line-height:1.5;word-break:break-all}
+        #cf-ledger-panel .cf-lg-stats.bad{color:#f5222d}
+        #cf-ledger-panel .cf-lg-body{flex:1;overflow-y:auto;padding:0 14px 10px;display:flex;flex-direction:column;gap:8px}
+        #cf-ledger-panel .cf-lg-empty{text-align:center;color:#999;font-size:12px;padding:26px 10px;line-height:1.9}
+        #cf-ledger-panel .cf-lg-video{border:1px solid #e5e5e5;border-radius:4px;overflow:hidden;flex:none}
+        #cf-ledger-panel .cf-lg-head{display:flex;align-items:center;gap:8px;padding:6px 8px;background:#fafafa;border-bottom:1px solid #f0f0f0;font-size:12px;color:#666;flex-wrap:wrap}
+        #cf-ledger-panel .cf-lg-link{color:#409bef;text-decoration:none;font-family:monospace;flex:none}
+        #cf-ledger-panel a.cf-lg-link:hover{text-decoration:underline}
+        #cf-ledger-panel .cf-lg-meta{color:#999;font-size:11px;margin-right:auto;flex:1;min-width:0}
+        #cf-ledger-panel .cf-lg-list{max-height:220px;overflow-y:auto}
+        #cf-ledger-panel .cf-lg-item{display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #f7f7f7;font-size:12px}
+        #cf-ledger-panel .cf-lg-item:last-child{border-bottom:none}
+        #cf-ledger-panel .cf-lg-time{font-family:monospace;color:#409bef;flex:0 0 104px}
+        #cf-ledger-panel .cf-lg-content{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#333;min-width:0}
+        #cf-ledger-panel .cf-lg-id{font-family:monospace;color:#999;font-size:11px;flex:0 0 auto;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        #cf-ledger-panel .cf-lg-badge{flex:none;font-size:11px;border-radius:2px;padding:0 5px;line-height:16px;white-space:nowrap}
+        #cf-ledger-panel .cf-lg-badge.pending{background:#fffbe6;color:#faad14;border:1px solid #ffe58f}
+        #cf-ledger-panel .cf-lg-badge.verified{background:#f6ffed;color:#52c41a;border:1px solid #b7eb8f}
+        #cf-ledger-panel .cf-lg-guide{font-size:11px;line-height:1.7;color:#666;background:#fff7e6;border-bottom:1px solid #ffe58f;padding:8px 10px}
+        #cf-ledger-panel .cf-lg-guide b{color:#fa8c16}
+        #cf-ledger-panel .cf-lg-checklist{width:100%;height:110px;margin-top:6px;border:1px solid #e5e5e5;border-radius:3px;font:11px/1.5 monospace;color:#666;background:#fff;padding:4px 6px;resize:vertical;outline:none}
+        #cf-ledger-panel .cf-lg-btn{border:1px solid #999;background:#f4f4f4;color:#666;border-radius:3px;padding:0 10px;font-size:12px;height:24px;line-height:16px;cursor:pointer;flex:none}
+        #cf-ledger-panel .cf-lg-btn:hover{background:#e5e5e5}
+        #cf-ledger-panel .cf-lg-btn.armed{background:#fff1f0;border-color:#f5222d;color:#f5222d}
         `;
     document.head.appendChild(S);
   }

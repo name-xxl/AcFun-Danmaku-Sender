@@ -1,18 +1,23 @@
     // ============================================================
     //  发送
     // ============================================================
-    // 理解卡｜我拥有：gmPost/sendModel/sendDanmaku/verifySent/getUid/getAcfunAuthor——全部对外网络的唯一出口。
+    // 理解卡｜我拥有：gmPost/sendModel/sendDanmaku/verifySent/getUid/getAcfunAuthor——全部对外网络的唯一出口；
+    //   闸④ 的接线落点（sendModel 的返回值 → ledgerRecordSentModel → gdm-ledger 台账）。
     // 我承诺：sendModel 参数与 A 站原生请求逐字段一致（请求层 color 是十进制、wordStyle.color 是 #rrggbb，两套口径别混）；
     //   句内节流 MODEL_SEND_INTERVAL=80ms、句间 sendInterval 默认 400ms（风控底线，RISKS R3）；
-    //   成功的 danmakuId 记入 lastSentIds 供 verifySent 匹配。
-    // 我永不：不做渲染/预览（那是 70/71 的职责）；「结果未知（可能已发送）」时绝不自动重试——重发前必须先 verifySent。
+    //   成功的 danmakuId 既记入 lastSentIds 供 verifySent 匹配，也由 sendModel **带出来**
+    //   （6.15.0 起返回 `{ ok: true, id, videoId }`，此前只 return true）供台账逐条落账。
+    // 我永不：不做渲染/预览（那是 70/71 的职责）；「结果未知（可能已发送）」时绝不自动重试——重发前必须先 verifySent；
+    //   台账记账失败绝不冒泡（记账是尽力而为，发送结果才是主线）。
     // 改我前读：verifySent 复刻播放器 pollByPosition 20 秒窗口全片扫描（new-danmaku/list 不返回高级弹幕）；
-    //   uid 在 cookie 的 auth_key（字符串，严格相等比较）；错误码 128019–128024 有人话映射。
+    //   uid 在 cookie 的 auth_key（字符串，严格相等比较）；错误码 128019–128024 有人话映射；
+    //   **sendModel 的返回值有两个消费者**（sendDanmaku 的循环、85-danmaku 的单发），改形状要同时改那两处。
 
 import { MODEL_SEND_INTERVAL } from './10-constants.js';
 import { log, sleep, status } from './20-utils.js';
 import { cancelled, getPlayer, getVideoInfo, subs } from './40-core.js';
-import { calcDurationMs, expandSub } from './50-engine.js';
+import { calcDurationMs, expandSub, getActivePreset } from './50-engine.js';
+import { ledgerMarkVerified, ledgerRecord } from './gdm-ledger.js';
 
     function gmPost(url, data) {
         return new Promise((resolve, reject) => {
@@ -76,10 +81,37 @@ import { calcDurationMs, expandSub } from './50-engine.js';
             const id = String(j.danmakuId || '');
             log('✅ 发送成功 danmakuId=' + id);
             if (id) lastSentIds.push(id);
-            return true;
+            // 6.15.0：把 id 带出来（闸④ 台账要用）。原来只 return true——全仓无消费者依赖那个布尔值
+            // （grep 证据见 test/unit/gdm-ledger.test.mjs ⑥）；两个消费者都要看返回值，别再退回布尔。
+            return { ok: true, id: id, videoId: v.videoId };
         }
         const code = j ? j.result : ('HTTP ' + resp.status);
         throw new Error(RESULT_MSG[code] || (j && j.error_msg) || ('result=' + code));
+    }
+
+    // 闸④ 台账记账（尽力而为）：一条 sendModel 成功就记一条。
+    // 返回值与记账无关，只为测试可断言；**任何失败都在这里收掉**，绝不影响发送结果、绝不抛给 startSend。
+    // 字段来源：id 取 sendModel 的返回（可能为空串——A 站没返回 danmakuId 时照记，见 gdm-ledger 头注）；
+    //   内容/起点位置取真正发出去的那个 model；视频取当前视频（含番剧标记，决定清理清单里的链接形态）；
+    //   预设取当前激活预设（getActivePreset 是纯查表，成本可忽略）。
+    function ledgerRecordSentModel(model, ret) {
+        try {
+            const v = getVideoInfo();
+            const preset = getActivePreset();
+            const id = (ret && typeof ret === 'object' && ret.id != null) ? String(ret.id) : '';
+            return ledgerRecord({
+                danmakuId: id,
+                content: (model && model.content) || '',
+                vid: (v && v.videoId) || 0,
+                bangumi: !!(v && v.bangumi),
+                startTime: (model && model.startTime != null) ? model.startTime : null,
+                presetId: (preset && preset.id) || '',
+                presetName: (preset && preset.name) || '',
+            });
+        } catch (e) {
+            log('⚠ 台账记录失败（不影响发送）: ' + e.message);
+            return null;
+        }
     }
 
     // 发送一条字幕：按激活预设展开成多个 model，逐个发送。
@@ -91,8 +123,12 @@ import { calcDurationMs, expandSub } from './50-engine.js';
         let sent = 0;
         for (let i = 0; i < models.length; i++) {
             if (cancelled) break;
-            await sendModel(models[i]);
+            const ret = await sendModel(models[i]);
             sent++;
+            // 闸④：记录紧跟 await 之后、本轮 break 判定之前——**被取消时已发出的那些照记**。
+            // 取消只可能发生在别处（循环开头的 break / 句间 sleep 期间 / await 期间），等到下一轮
+            // 顶部才发现，那时这条的成功已经在上一轮记完了；这里没有任何「取消就不记」的分支。
+            ledgerRecordSentModel(models[i], ret);
             if (i < models.length - 1 && !cancelled) await sleep(MODEL_SEND_INTERVAL);
         }
         return { sent, total: models.length };
@@ -151,7 +187,10 @@ import { calcDurationMs, expandSub } from './50-engine.js';
             // 按 body+position 去重，统计「去重后的你的弹幕条数」
             const uniqueKey = (d) => d.body + '@' + d.position;
             const uniqueCount = new Set(mine.map(uniqueKey)).size;
-            log('🔍 全片扫描：时长=' + (durMs / 1000) + 's，分段=' + segCount + '，高级弹幕总数=' + adv.length + '，你的弹幕=' + mine.length + '（去重后 ' + uniqueCount + ' 条）');
+            // 闸④：**确认到的才回写台账**（在池里真看见过 → verified「已确认可见」）。
+            // 只传 mine 的 id：它们确实是本次全片扫描在池里查到的；台账按 id 匹配，匹配不到的条目不受影响。
+            const marked = ledgerMarkVerified(mine.map((d) => String(d.danmakuId)));
+            log('🔍 全片扫描：时长=' + (durMs / 1000) + 's，分段=' + segCount + '，高级弹幕总数=' + adv.length + '，你的弹幕=' + mine.length + '（去重 ' + uniqueCount + ' 条，台账确认 ' + marked + ' 条）');
 
             if (mine.length) {
                 status(`✅ 全片高级弹幕 ${adv.length} 条，其中你的 ${mine.length} 条（去重 ${uniqueCount} 条）`, 'ok');
@@ -160,7 +199,9 @@ import { calcDurationMs, expandSub } from './50-engine.js';
                 status(`全片有 ${adv.length} 条高级弹幕，但都不是你的`, 'busy');
                 adv.slice(0, 10).forEach((d) => log('   · danmakuId=' + d.danmakuId + ' body=' + d.body + ' position=' + d.position + ' user=' + d.userId));
             } else {
-                status('⚠️ 全片未查到高级弹幕（可能仍在审核延迟，或接口返回受限）', 'err');
+                // 「查不到」不是「失败」：审核延迟 / 接口返回受限都会这样，台账里这些记录仍是「待审核（未确认）」。
+                // 6.15.0 起从 err 改为 busy（红色 error 态会让人以为发送失败了）。
+                status('⚠️ 全片未查到高级弹幕（可能仍在审核延迟，或接口返回受限）——这不等于发送失败，台账里仍是「待审核（未确认）」', 'busy');
             }
         } catch (e) {
             status('验证失败: ' + e.message, 'err');
@@ -216,7 +257,7 @@ import { calcDurationMs, expandSub } from './50-engine.js';
 
 
 // —— ESM 导出（6.8.0 迁移）——
-export { getAcfunAuthor, getUid, lastSentIds, sendDanmaku, sendModel, verifySent };
+export { getAcfunAuthor, getUid, lastSentIds, ledgerRecordSentModel, sendDanmaku, sendModel, verifySent };
 // 跨文件写：ESM 导入绑定只读，80-ui 发起新批次时清空 lastSentIds 走此 setter（声明留原地，初始化未改）
 export function setLastSentIds(v) { lastSentIds = v; }
 // 仅供冒烟测试（#15 探针给发送循环装替身）：不对其它 src 模块开放

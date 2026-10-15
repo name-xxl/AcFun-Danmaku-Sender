@@ -3,10 +3,12 @@
     // ============================================================
     // 理解卡｜我拥有：字幕模式面板 ensurePanel（约 212 行 innerHTML 骨架）、字幕列表 renderList、
     //   startSend 批量发送循环、切片对齐、全选/反选/范围选、闸③ 的常驻计数行（#cf-audit）与
-    //   大批量二次确认（confirmHighVolume）、闸② 的拒绝落点（startSend 里调 55-audit 的 auditSend）。
+    //   大批量二次确认（confirmHighVolume）、闸② 的拒绝落点（startSend 里调 55-audit 的 auditSend）、
+    //   闸④ 台账入口按钮（#cf-ledger-btn——只是入口，视图与全部逻辑在 gdm-ledger-ui / gdm-ledger）。
     // 我承诺：批量发送前 confirm 展示「N 条字幕 → M 条弹幕」计数；发送前先过 auditSend（有病灶即拒绝）；
     //   超过阈值的批次走内联二次确认（倒计时可撤）；逐条 sleep(sendInterval) 节流；取消即时生效。
-    // 我永不：confirm( 全仓白名单 3 处我占 1（check 门禁盯着，只减不增）——闸③ 的二次确认走内联面板，不新开 confirm(。
+    // 我永不：confirm( 全仓白名单 3 处我占 1（check 门禁盯着，只减不增）——闸③ 的二次确认与闸④ 的清空
+    //   都走内联面板，不新开 confirm(。
     // 改我前读：面板先挂 body（display:none）再由 boot.js 搬进原生面板壳——document 级查询依赖这个顺序；
     //   高级编辑区（#cf-adv-body）自 6.12.0 起**只剩空容器**，17 个控件由 35-adv-fields 的声明经
     //   85-danmaku.renderAdvancedForm 生成（事件也随生成接好）——往模板里补一行 #cf-adv-* 即造出第二真源；
@@ -163,6 +165,7 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
             <div class="cf-actions-row">
                 <button type="button" class="cf-btn cf-btn-p" id="cf-send">▶ 发送全部</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-verify">🔍 验证已发</button>
+                <button type="button" class="cf-btn cf-btn-b" id="cf-ledger-btn" title="闸④ 台账：本次及以往发送成功的弹幕逐条记录（时间 / 内容 / danmakuId / 视频），可回查、可导出、可引导手动清理（本工具删不了弹幕）">📋 台账</button>
                 <label class="cf-interval">发送间隔
                     <input type="number" id="cf-interval" min="0" max="60000" step="100" value="${sendInterval}"> ms
                 </label>

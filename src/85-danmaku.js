@@ -4,7 +4,8 @@
     // 理解卡｜我拥有：switchPanelMode（预设/样式区 DOM 在两模式间搬移复用）、makeManualSub 虚拟字幕、
     //   高级编辑全字段（TIMING_FUNCS 28 缓动 / ADV_FORM_DECL + renderAdvancedForm 编辑区表单 /
     //   MOVES_DECL 运动轨迹声明 / readAdvancedConfig / renderMoves / exportAdvancedPreset）。
-    // 我承诺：单条与批量走同一条 expandSub → sendModel 管线（单发不是特例路径）；
+    // 我承诺：单条与批量走同一条 expandSub → sendModel 管线（单发不是特例路径），
+    //   并且**都逐条落闸④ 台账**（sendModel 的返回值交给 60-network 的 ledgerRecordSentModel）；
     //   高级字段的取值真源仍是 DOM（readAdvancedConfig 按 id 回读），控件只显示与报告变化。
     // 我永不：不碰批量/时间轴发送（80-ui 的 startSend 职责）；syncAdvEnableUI 已迁 90-preset-ui
     //   （状态双源补丁，病灶②存量；依赖图无环要求），P3 要消灭这个模式而不是复制它。
@@ -24,7 +25,7 @@ import {
     setAdvancedConfig, timeOffset,
 } from './40-core.js';
 import { activePresetHasEffects, cfgFor, expandSub } from './50-engine.js';
-import { sendModel } from './60-network.js';
+import { ledgerRecordSentModel, sendModel } from './60-network.js';
 import { previewSub } from './70-preview.js';
 import { panelMode, setPanelMode } from './80-ui.js';
 import { openExportDialog, syncAdvEnableUI } from './90-preset-ui.js';
@@ -163,7 +164,11 @@ import { buildFieldForm, buildParamControl } from './gdm-form.js';
         const cfg = cfgFor(sub);
         try {
             const models = expandSub(sub, cfg, sub.duration || DEFAULT_DURATION, 1);
-            for (const m of models) await sendModel(m);
+            // 闸④：单发与批量同一条记账路径——每条成功都落台账（记账失败不影响发送，见 60-network）
+            for (const m of models) {
+                const ret = await sendModel(m);
+                ledgerRecordSentModel(m, ret);
+            }
             status(`✅ 已发送：${text.trim()} @ ${fmt(Math.max(0, sub.time + timeOffset))}（${Math.round((sub.duration || DEFAULT_DURATION) / 1000)}s）`, 'ok');
             const inp = $('#cf-danmaku-text');
             if (inp) inp.value = '';

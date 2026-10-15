@@ -2,7 +2,7 @@
     //  入口切换（替换式）
     // ============================================================
     // 理解卡｜我拥有：装配点 init()（initPresets→injectStyle→ensurePanel→bindEvents→setupEntry，DOMContentLoaded 门控）、
-    //   约 130 行仿原生 CSS（injectStyle 单点注入）、入口按钮组、400ms 轮询（病灶③，全仓唯一 setInterval）。
+    //   约 155 行仿原生 CSS（injectStyle 单点注入，含闸④ 台账浮层）、入口按钮组、400ms 轮询（病灶③，全仓唯一 setInterval）。
     // 我承诺：switchView 切换时显隐原生 navs/content（寄生替换式——P3 改为浮层共存，行为变更已立项）。
     // 我永不：setInterval 白名单 1/1（P3 清零换 MutationObserver）；新样式只进 injectStyle 单点。
     // 改我前读：面板注入依赖 .danmaku-g-launcher-panel 存在（原生面板壳）；SCRIPT_VERSION 读 GM_info；
@@ -255,6 +255,34 @@ import { bindEvents } from './95-events.js';
         #cf-entry-group .cf-entry-btn:hover{background:#fd4c5d;color:#fff}
         #cf-entry-group .cf-default-chk{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:#666;cursor:pointer;white-space:nowrap}
         #cf-entry-group .cf-default-chk input{accent-color:#fd4c5d;cursor:pointer}
+        /* 闸④ 台账视图（gdm-ledger-ui.openLedgerPanel；外壳复用 .cf-dev-panel-mask/.cf-dev-dlg。
+           全部选择器前缀 #cf-ledger-panel：浮层挂在 body 上，拿不到 #cf-sub-panel 的那套样式） */
+        #cf-ledger-panel *{box-sizing:border-box}
+        #cf-ledger-panel .cf-lg-dlg{width:560px}
+        #cf-ledger-panel .cf-lg-stats{font-size:11px;color:#999;padding:0 14px 8px;line-height:1.5;word-break:break-all}
+        #cf-ledger-panel .cf-lg-stats.bad{color:#f5222d}
+        #cf-ledger-panel .cf-lg-body{flex:1;overflow-y:auto;padding:0 14px 10px;display:flex;flex-direction:column;gap:8px}
+        #cf-ledger-panel .cf-lg-empty{text-align:center;color:#999;font-size:12px;padding:26px 10px;line-height:1.9}
+        #cf-ledger-panel .cf-lg-video{border:1px solid #e5e5e5;border-radius:4px;overflow:hidden;flex:none}
+        #cf-ledger-panel .cf-lg-head{display:flex;align-items:center;gap:8px;padding:6px 8px;background:#fafafa;border-bottom:1px solid #f0f0f0;font-size:12px;color:#666;flex-wrap:wrap}
+        #cf-ledger-panel .cf-lg-link{color:#409bef;text-decoration:none;font-family:monospace;flex:none}
+        #cf-ledger-panel a.cf-lg-link:hover{text-decoration:underline}
+        #cf-ledger-panel .cf-lg-meta{color:#999;font-size:11px;margin-right:auto;flex:1;min-width:0}
+        #cf-ledger-panel .cf-lg-list{max-height:220px;overflow-y:auto}
+        #cf-ledger-panel .cf-lg-item{display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #f7f7f7;font-size:12px}
+        #cf-ledger-panel .cf-lg-item:last-child{border-bottom:none}
+        #cf-ledger-panel .cf-lg-time{font-family:monospace;color:#409bef;flex:0 0 104px}
+        #cf-ledger-panel .cf-lg-content{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#333;min-width:0}
+        #cf-ledger-panel .cf-lg-id{font-family:monospace;color:#999;font-size:11px;flex:0 0 auto;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        #cf-ledger-panel .cf-lg-badge{flex:none;font-size:11px;border-radius:2px;padding:0 5px;line-height:16px;white-space:nowrap}
+        #cf-ledger-panel .cf-lg-badge.pending{background:#fffbe6;color:#faad14;border:1px solid #ffe58f}
+        #cf-ledger-panel .cf-lg-badge.verified{background:#f6ffed;color:#52c41a;border:1px solid #b7eb8f}
+        #cf-ledger-panel .cf-lg-guide{font-size:11px;line-height:1.7;color:#666;background:#fff7e6;border-bottom:1px solid #ffe58f;padding:8px 10px}
+        #cf-ledger-panel .cf-lg-guide b{color:#fa8c16}
+        #cf-ledger-panel .cf-lg-checklist{width:100%;height:110px;margin-top:6px;border:1px solid #e5e5e5;border-radius:3px;font:11px/1.5 monospace;color:#666;background:#fff;padding:4px 6px;resize:vertical;outline:none}
+        #cf-ledger-panel .cf-lg-btn{border:1px solid #999;background:#f4f4f4;color:#666;border-radius:3px;padding:0 10px;font-size:12px;height:24px;line-height:16px;cursor:pointer;flex:none}
+        #cf-ledger-panel .cf-lg-btn:hover{background:#e5e5e5}
+        #cf-ledger-panel .cf-lg-btn.armed{background:#fff1f0;border-color:#f5222d;color:#f5222d}
         `;
         document.head.appendChild(S);
     }
