@@ -1,3 +1,44 @@
+## 更新内容（6.11.0）
+
+**行为变更：运动轨迹列表改由 schema 生成（`gdm-form` 新增 `list` 控件类型与其 `nullable` 语义）。**
+
+- **新增控件类型 `list`（可增删列表）**：`gdm-form.js` 的 `buildParamControl` 多一条 `type: 'list'` 分支
+  （`buildListControl`）。声明字段：`item`（常显子字段数组）、`advanced`（初始折叠的可收起子区
+  `{ label, expandedLabel, className, toggleClass, after, fields }`）、`min` / `minMessage`（删除保底）、
+  `addLabel` / `addClass`（内建「添加」按钮，不传则不产出，由外部按钮调 `add()`）、
+  `removeLabel` / `removeClass`、`title`、`containerClass` / `itemClass`。**所有类名与文案一律由调用方声明**，
+  `gdm-form` 不认识任何 `cf-` 类名，也不自造类名（与既有「行类名由调用方追加」的约定一致）
+- **子字段新增 `nullable` 语义**：`number` 输入框**空串 ⇒ `null`**（含义是「跟随样式/本体/时长」），
+  与 `buildParamControl` 的 number 分支**相反**（那里 `parseFloat('')` → NaN → 落回 `default`）。
+  另有两项行内装饰：`hint: { className, format }`（输入框紧后的提示 span，初始算一次并绑 `input` 刷新）
+  与 `after: { text, style }`（输入框后的静态说明 span，如「ms」小字）
+- **控件契约**：返回 `{ node, sync }`，`list` 另带 `add()`（供外部「＋ 加动作」按钮委托）。
+  值语义——**字段级编辑**就地改内存里的那条对象 + `set(整个新数组)`，**不重渲染**（输入框不失焦）；
+  **结构级编辑**（`add` / 删除 / `sync()`）`set(新数组)` 并重建整份列表 DOM；`sync()` 幂等
+- **`85-danmaku.js` 用声明替换手写模板**：`renderMoves()` 的 innerHTML 拼接 + 三组事件接线（删除 /
+  「⚙ 高级」折叠 / 旋转圈数提示）改为「`MOVES_DECL` 声明 + `buildParamControl` 生成」。
+  **DOM 逐项不变**——类名（`.cf-move-item` / `.cf-mv-*` / `.cf-rot-inp` / `.cf-rot-hint` / `.cf-move-adv` /
+  `.cf-move-toggle` / `.cf-move-del`）、`data-i`、占位文案、`min`/`max`/`step`、`.cf-move-adv` 的
+  `display:none` 初值、按钮文案、选项表全部保持。唯一结构差异：`#cf-moves` 下多了一层无类名的容器 div
+  （列表控件的 `node`），条目本身仍直接是 `.cf-move-item`，回读用后代选择器故不受影响
+  （迁移期用一次性 DOM 垫片脚本把新旧两侧规范化后逐字对照，5 组夹具全等，脚本不进仓）
+- **边界未动**：`readAdvancedConfig()` 读 moves 的那一段**一行未改**（回读靠类名耦合，见下）；
+  `resetAdvancedConfig()` 与 `95-events.js` 的首次同步仍调 `renderMoves()`（函数名与签名不变）；
+  `TIMING_FUNCS` 28 项缓动表原样使用；`boot.js` 的 CSS **零改动**（未新增类名、未改样式）。
+  `addMove()` 改为委托控件的 `add()`，空条目初值由声明推出（`nullable ⇒ null`、`default ⇒ 值`），
+  与旧实现那条 16 字段字面量逐字段一致
+- **三处微妙语义逐条保住**：① 空输入框 ⇒ `null`（不是默认值、不是 0）——由子字段 `nullable` 承担，
+  往返对照里显式 `0` 仍原样回读；② `readAdvancedConfig` 的「列表为空则保留旧值」怪癖仍在（该行未动），
+  且 `min: 1` 保证正常操作下列表不会变空；③ 删除保底 `min: 1` + `status('至少保留一个动作', 'err')`
+  文案与类型逐字保留
+- **新增单测 `test/unit/moves-schema.test.mjs`（9 条）**：把回读侧的选择器清单（从源码抽取，不手抄）
+  与 `MOVES_DECL` 产出的类名做**双向比对**——类名冻结清单（不许多不许少）、回读选择器 ⊆ 产出类名、
+  字段 key ↔ 类名逐条对齐（两字段互换类名也红灯）、`nullable` 字段集 == 回读走 `coord()` 的字段集、
+  交互侧文案/类名齐备、子字段类型覆盖、`TIMING_FUNCS` 唯一真源、`#cf-moves` 三处（面板 DOM / 回读段 /
+  `renderMoves`）一致、空条目与 `40-core` 默认动作逐字段对齐。单测 53 条 → 62 条
+- **未验证边界**：无真浏览器（UI 结论来自静态读取 + 上述单测 + 一次性 DOM 垫片脚本）；
+  类名比对是「声明产出的类名」与「回读侧选择器」之间的比对，不是真实渲染结果的比对
+
 ## 更新内容（6.10.0）
 
 **纯抽取式重构：新增 `src/gdm-form.js`（表单渲染层）。零行为变更。**

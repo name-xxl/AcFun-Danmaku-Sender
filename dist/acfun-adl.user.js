@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AcFun 高级弹幕层编辑器 (ADL)
 // @namespace    https://github.com/acfun-danmaku-sender
-// @version      6.10.0
+// @version      6.11.0
 // @description  视频的高级弹幕层编辑器：给视频加一条可发布的字幕/特效轨道，所见即所得，发送只是导出。导入 SRT/ASS/LRC，预设特效，彩排通过才可导出。
 // @author       name_xxl
 // @match        *://www.acfun.cn/v/ac*
@@ -2345,6 +2345,7 @@
 
   // src/gdm-form.js
   function buildParamControl(param, get, set, onChange) {
+    if (param.type === "list") return buildListControl(param, get, set, onChange);
     const row = document.createElement("div");
     row.className = "cf-row";
     const label = document.createElement("label");
@@ -2429,6 +2430,196 @@
     }
     row.appendChild(input);
     return { node: row, sync };
+  }
+  function buildListControl(param, get, set, onChange) {
+    const container = document.createElement("div");
+    if (param.containerClass) container.className = param.containerClass;
+    const readItems = () => {
+      const v = get();
+      return Array.isArray(v) ? v : [];
+    };
+    const commit = (next) => {
+      set(next);
+      if (onChange) onChange(next);
+    };
+    const groupRows = (fields) => {
+      const out = [];
+      fields.forEach((f) => {
+        const key = f.row || "#" + f.key;
+        let r = out.filter((x) => x.key === key)[0];
+        if (!r) {
+          r = { key, fields: [] };
+          out.push(r);
+        }
+        r.fields.push(f);
+      });
+      return out;
+    };
+    const textOf = (f, item) => {
+      const v = item ? item[f.key] : void 0;
+      return v === void 0 || v === null ? "" : String(v);
+    };
+    const buildInput = (f, item, onEdit) => {
+      if (f.type === "select") {
+        const sel = document.createElement("select");
+        const choices = f.choices || [];
+        const want = textOf(f, item);
+        const hit = choices.some((c) => String(c.value) === want);
+        choices.forEach((c, ci) => {
+          const o = document.createElement("option");
+          o.value = c.value;
+          o.textContent = c.label;
+          if (String(c.value) === want || !hit && ci === 0) o.setAttribute("selected", "");
+          sel.appendChild(o);
+        });
+        sel.addEventListener("change", () => onEdit(sel.value));
+        return sel;
+      }
+      const input = document.createElement("input");
+      input.type = "number";
+      if (f.min !== void 0) input.min = f.min;
+      if (f.max !== void 0) input.max = f.max;
+      if (f.step !== void 0) input.step = f.step;
+      input.placeholder = f.placeholder || "";
+      input.setAttribute("value", textOf(f, item));
+      input.addEventListener("change", () => {
+        let v = parseFloat(input.value);
+        if (isNaN(v)) v = f.nullable ? null : f.default !== void 0 ? f.default : 0;
+        onEdit(v);
+      });
+      return input;
+    };
+    const buildRow = (fields, item, onEdit) => {
+      const row = document.createElement("div");
+      row.className = "cf-row";
+      fields.forEach((f) => {
+        if (f.label) {
+          const label = document.createElement("label");
+          label.textContent = f.label;
+          row.appendChild(label);
+        }
+        if (f.letter) row.appendChild(document.createTextNode(f.letter));
+        const input = buildInput(f, item, (v) => onEdit(f.key, v));
+        if (f.className) input.className = f.className;
+        row.appendChild(input);
+        if (f.hint) {
+          const hint = document.createElement("span");
+          hint.className = f.hint.className || "";
+          const upd = () => {
+            hint.textContent = f.hint.format ? f.hint.format(input.value) : "";
+          };
+          input.addEventListener("input", upd);
+          upd();
+          row.appendChild(hint);
+        }
+        if (f.after) {
+          const note = document.createElement("span");
+          note.textContent = f.after.text;
+          if (f.after.style) note.setAttribute("style", f.after.style);
+          row.appendChild(note);
+        }
+      });
+      return row;
+    };
+    const buildAdvanced = (adv, item, onEdit) => {
+      const box = document.createElement("div");
+      if (adv.className) box.className = adv.className;
+      box.style.display = "none";
+      groupRows(adv.fields || []).forEach((r) => box.appendChild(buildRow(r.fields, item, onEdit)));
+      return box;
+    };
+    const buildItem = (item, i) => {
+      const el = document.createElement("div");
+      el.className = param.itemClass || "";
+      el.dataset.i = String(i);
+      const onEdit = (key, v) => {
+        const cur = readItems();
+        const target = cur[i];
+        if (!target || typeof target !== "object") return;
+        target[key] = v;
+        commit(cur.slice());
+      };
+      let toggle = null;
+      if (param.advanced) {
+        toggle = document.createElement("button");
+        toggle.type = "button";
+        if (param.advanced.toggleClass) toggle.className = param.advanced.toggleClass;
+        toggle.textContent = param.advanced.label || "";
+        el.appendChild(toggle);
+      }
+      const del = document.createElement("button");
+      del.type = "button";
+      if (param.removeClass) del.className = param.removeClass;
+      del.textContent = param.removeLabel || "删除";
+      del.addEventListener("click", () => {
+        const cur = readItems();
+        if (param.min !== void 0 && cur.length <= param.min) {
+          status(param.minMessage || "至少保留 " + param.min + " 项", "err");
+          return;
+        }
+        const next = cur.slice();
+        next.splice(i, 1);
+        commit(next);
+        render();
+      });
+      el.appendChild(del);
+      if (param.title) {
+        const t = document.createElement("label");
+        t.textContent = String(param.title).replace("{n}", String(i + 1));
+        el.insertBefore(t, el.firstChild);
+      }
+      const advEl = param.advanced ? buildAdvanced(param.advanced, item, onEdit) : null;
+      const itemRows = groupRows(param.item || []);
+      let insertAt = itemRows.length;
+      if (advEl && param.advanced.after) {
+        const k = itemRows.findIndex((r) => r.key === param.advanced.after);
+        if (k >= 0) insertAt = k + 1;
+      }
+      if (toggle && advEl) {
+        toggle.addEventListener("click", () => {
+          const hidden = advEl.style.display === "none";
+          advEl.style.display = hidden ? "" : "none";
+          toggle.textContent = hidden ? param.advanced.expandedLabel || "▲ 收起" : param.advanced.label || "";
+        });
+      }
+      itemRows.forEach((r, ri) => {
+        if (advEl && ri === insertAt) el.appendChild(advEl);
+        el.appendChild(buildRow(r.fields, item, onEdit));
+      });
+      if (advEl && insertAt >= itemRows.length) el.appendChild(advEl);
+      return el;
+    };
+    const add = () => {
+      const next = readItems().slice();
+      next.push(blankListItem(param));
+      commit(next);
+      render();
+    };
+    const render = () => {
+      container.innerHTML = "";
+      readItems().forEach((item, i) => container.appendChild(buildItem(item, i)));
+      if (param.addLabel) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        if (param.addClass) btn.className = param.addClass;
+        btn.textContent = param.addLabel;
+        btn.addEventListener("click", add);
+        container.appendChild(btn);
+      }
+    };
+    render();
+    return { node: container, sync: render, add };
+  }
+  function blankListItem(param) {
+    const out = {};
+    const fields = (param.item || []).concat(param.advanced ? param.advanced.fields || [] : []);
+    fields.forEach((f) => {
+      if (f.default !== void 0) out[f.key] = f.default;
+      else if (f.nullable) out[f.key] = null;
+      else if (f.type === "select") out[f.key] = f.choices && f.choices[0] ? f.choices[0].value : "";
+      else out[f.key] = "";
+    });
+    return out;
   }
   var paramSubscriptions = [];
   function subscribeToParams(fn, owner) {
@@ -3407,77 +3598,60 @@
     const rest = Math.round(abs % 360);
     return rest === 0 ? `${sign}${turns}圈` : `${sign}${turns}圈${rest}°`;
   }
+  var MOVES_DECL = {
+    key: "moves",
+    label: "运动轨迹",
+    type: "list",
+    itemClass: "cf-move-item",
+    // 回读：$$('#cf-moves .cf-move-item')
+    removeClass: "cf-move-del",
+    removeLabel: "删除",
+    min: 1,
+    minMessage: "至少保留一个动作",
+    item: [
+      { key: "fromX", label: "起点", row: "from", letter: "X", type: "number", className: "cf-mv-fx", nullable: true, min: 0, max: 100, placeholder: "跟随样式" },
+      { key: "fromY", row: "from", letter: "Y", type: "number", className: "cf-mv-fy", nullable: true, min: 0, max: 100, placeholder: "跟随样式" },
+      { key: "toX", label: "终点", row: "to", letter: "X", type: "number", className: "cf-mv-tx", nullable: true, min: 0, max: 100, placeholder: "跟随样式" },
+      { key: "toY", row: "to", letter: "Y", type: "number", className: "cf-mv-ty", nullable: true, min: 0, max: 100, placeholder: "跟随样式" },
+      { key: "moveTime", label: "耗时", row: "time", type: "number", className: "cf-mv-mt", nullable: true, min: 100, max: MAX_DURATION, step: 100, placeholder: "跟随时长", after: { text: "ms", style: "font-size:11px;color:#999" } },
+      { key: "timingFunction", label: "缓动", row: "time", type: "select", className: "cf-mv-tf", choices: TIMING_FUNCS, default: "linear" }
+    ],
+    advanced: {
+      label: "⚙ 高级",
+      expandedLabel: "▲ 收起",
+      className: "cf-move-adv",
+      toggleClass: "cf-move-toggle",
+      after: "to",
+      // 子区插在「终点」行之后、「耗时」行之前（与旧模板的 DOM 顺序一致）
+      fields: [
+        { key: "fromScaleX", label: "起点拉伸", row: "fs", letter: "X", type: "number", className: "cf-mv-fsx", nullable: true, min: 0.1, max: 5, step: 0.1, placeholder: "跟随本体" },
+        { key: "fromScaleY", row: "fs", letter: "Y", type: "number", className: "cf-mv-fsy", nullable: true, min: 0.1, max: 5, step: 0.1, placeholder: "跟随本体" },
+        { key: "toScaleX", label: "终点拉伸", row: "ts", letter: "X", type: "number", className: "cf-mv-tsx", nullable: true, min: 0.1, max: 5, step: 0.1, placeholder: "跟随本体" },
+        { key: "toScaleY", row: "ts", letter: "Y", type: "number", className: "cf-mv-tsy", nullable: true, min: 0.1, max: 5, step: 0.1, placeholder: "跟随本体" },
+        { key: "fromRotateX", label: "起点旋转", row: "fr", letter: "X", type: "number", className: "cf-mv-frx cf-rot-inp", nullable: true, min: -3600, max: 3600, placeholder: "0", hint: { className: "cf-rot-hint", format: rotateLabel } },
+        { key: "fromRotateY", row: "fr", letter: "Y", type: "number", className: "cf-mv-fry cf-rot-inp", nullable: true, min: -3600, max: 3600, placeholder: "0", hint: { className: "cf-rot-hint", format: rotateLabel } },
+        { key: "fromRotateZ", row: "fr", letter: "Z", type: "number", className: "cf-mv-frz cf-rot-inp", nullable: true, min: -3600, max: 3600, placeholder: "0", hint: { className: "cf-rot-hint", format: rotateLabel } },
+        { key: "toRotateX", label: "终点旋转", row: "tr", letter: "X", type: "number", className: "cf-mv-trx cf-rot-inp", nullable: true, min: -3600, max: 3600, placeholder: "0", hint: { className: "cf-rot-hint", format: rotateLabel } },
+        { key: "toRotateY", row: "tr", letter: "Y", type: "number", className: "cf-mv-try cf-rot-inp", nullable: true, min: -3600, max: 3600, placeholder: "0", hint: { className: "cf-rot-hint", format: rotateLabel } },
+        { key: "toRotateZ", row: "tr", letter: "Z", type: "number", className: "cf-mv-trz cf-rot-inp", nullable: true, min: -3600, max: 3600, placeholder: "0", hint: { className: "cf-rot-hint", format: rotateLabel } }
+      ]
+    }
+  };
+  var movesCtl = null;
+  var getMoves = () => advancedConfig.moves;
+  var setMoves = (arr) => {
+    advancedConfig.moves = arr;
+  };
   function renderMoves() {
     const box = $("#cf-moves");
     if (!box) return;
-    box.innerHTML = advancedConfig.moves.map((mv, i) => {
-      const v = (n) => n == null ? "" : n;
-      return `
-            <div class="cf-move-item" data-i="${i}">
-                <button type="button" class="cf-move-toggle">⚙ 高级</button>
-                <button type="button" class="cf-move-del">删除</button>
-                <div class="cf-row"><label>起点</label>X<input type="number" class="cf-mv-fx" min="0" max="100" placeholder="跟随样式" value="${v(mv.fromX)}">Y<input type="number" class="cf-mv-fy" min="0" max="100" placeholder="跟随样式" value="${v(mv.fromY)}"></div>
-                <div class="cf-row"><label>终点</label>X<input type="number" class="cf-mv-tx" min="0" max="100" placeholder="跟随样式" value="${v(mv.toX)}">Y<input type="number" class="cf-mv-ty" min="0" max="100" placeholder="跟随样式" value="${v(mv.toY)}"></div>
-                <div class="cf-move-adv" style="display:none">
-                    <div class="cf-row"><label>起点拉伸</label>X<input type="number" class="cf-mv-fsx" min="0.1" max="5" step="0.1" placeholder="跟随本体" value="${v(mv.fromScaleX)}">Y<input type="number" class="cf-mv-fsy" min="0.1" max="5" step="0.1" placeholder="跟随本体" value="${v(mv.fromScaleY)}"></div>
-                    <div class="cf-row"><label>终点拉伸</label>X<input type="number" class="cf-mv-tsx" min="0.1" max="5" step="0.1" placeholder="跟随本体" value="${v(mv.toScaleX)}">Y<input type="number" class="cf-mv-tsy" min="0.1" max="5" step="0.1" placeholder="跟随本体" value="${v(mv.toScaleY)}"></div>
-                    <div class="cf-row"><label>起点旋转</label>X<input type="number" class="cf-mv-frx cf-rot-inp" min="-3600" max="3600" placeholder="0" value="${v(mv.fromRotateX)}"><span class="cf-rot-hint"></span>Y<input type="number" class="cf-mv-fry cf-rot-inp" min="-3600" max="3600" placeholder="0" value="${v(mv.fromRotateY)}"><span class="cf-rot-hint"></span>Z<input type="number" class="cf-mv-frz cf-rot-inp" min="-3600" max="3600" placeholder="0" value="${v(mv.fromRotateZ)}"><span class="cf-rot-hint"></span></div>
-                    <div class="cf-row"><label>终点旋转</label>X<input type="number" class="cf-mv-trx cf-rot-inp" min="-3600" max="3600" placeholder="0" value="${v(mv.toRotateX)}"><span class="cf-rot-hint"></span>Y<input type="number" class="cf-mv-try cf-rot-inp" min="-3600" max="3600" placeholder="0" value="${v(mv.toRotateY)}"><span class="cf-rot-hint"></span>Z<input type="number" class="cf-mv-trz cf-rot-inp" min="-3600" max="3600" placeholder="0" value="${v(mv.toRotateZ)}"><span class="cf-rot-hint"></span></div>
-                </div>
-                <div class="cf-row"><label>耗时</label><input type="number" class="cf-mv-mt" min="100" max="${MAX_DURATION}" step="100" placeholder="跟随时长" value="${v(mv.moveTime)}"><span style="font-size:11px;color:#999">ms</span>
-                    <label>缓动</label><select class="cf-mv-tf">${TIMING_FUNCS.map((f) => `<option value="${f.value}"${f.value === (mv.timingFunction || "linear") ? " selected" : ""}>${f.label}</option>`).join("")}</select>
-                </div>
-            </div>`;
-    }).join("");
-    box.querySelectorAll(".cf-move-del").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const i = +btn.closest(".cf-move-item").dataset.i;
-        if (advancedConfig.moves.length <= 1) {
-          status("至少保留一个动作", "err");
-          return;
-        }
-        advancedConfig.moves.splice(i, 1);
-        renderMoves();
-      });
-    });
-    box.querySelectorAll(".cf-move-toggle").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const adv = btn.closest(".cf-move-item").querySelector(".cf-move-adv");
-        if (!adv) return;
-        const hidden = adv.style.display === "none";
-        adv.style.display = hidden ? "" : "none";
-        btn.textContent = hidden ? "▲ 收起" : "⚙ 高级";
-      });
-    });
-    box.querySelectorAll(".cf-rot-inp").forEach((inp) => {
-      const hint = inp.nextElementSibling;
-      const upd = () => {
-        if (hint) hint.textContent = rotateLabel(inp.value);
-      };
-      inp.addEventListener("input", upd);
-      upd();
-    });
+    box.innerHTML = "";
+    movesCtl = buildParamControl(MOVES_DECL, getMoves, setMoves);
+    box.appendChild(movesCtl.node);
   }
   function addMove() {
-    advancedConfig.moves.push({
-      fromX: null,
-      fromY: null,
-      toX: null,
-      toY: null,
-      fromScaleX: null,
-      fromScaleY: null,
-      toScaleX: null,
-      toScaleY: null,
-      fromRotateX: null,
-      fromRotateY: null,
-      fromRotateZ: null,
-      toRotateX: null,
-      toRotateY: null,
-      toRotateZ: null,
-      moveTime: null,
-      timingFunction: "linear"
-    });
-    renderMoves();
+    if (!movesCtl) renderMoves();
+    if (movesCtl) movesCtl.add();
   }
   function resetAdvancedConfig() {
     setAdvancedConfig(JSON.parse(JSON.stringify(DEFAULT_ADVANCED_CONFIG)));

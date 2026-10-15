@@ -2,11 +2,15 @@
     //  弹幕模式（手动单条输入）
     // ============================================================
     // 理解卡｜我拥有：switchPanelMode（预设/样式区 DOM 在两模式间搬移复用）、makeManualSub 虚拟字幕、
-    //   高级编辑全字段（TIMING_FUNCS 28 缓动 / readAdvancedConfig / renderMoves / exportAdvancedPreset）。
+    //   高级编辑全字段（TIMING_FUNCS 28 缓动 / MOVES_DECL 运动轨迹声明 / readAdvancedConfig / renderMoves /
+    //   exportAdvancedPreset）。
     // 我承诺：单条与批量走同一条 expandSub → sendModel 管线（单发不是特例路径）。
     // 我永不：不碰批量/时间轴发送（80-ui 的 startSend 职责）；syncAdvEnableUI 已迁 90-preset-ui
     //   （状态双源补丁，病灶②存量；依赖图无环要求），P3 要消灭这个模式而不是复制它。
-    // 改我前读：P3 我并入 gdm-panel 成「简单模式」；预设区/样式区 DOM 节点是两模式共享的，动布局先想另一半。
+    // 改我前读：P3 我并入 gdm-panel 成「简单模式」；预设区/样式区 DOM 节点是两模式共享的，动布局先想另一半；
+    //   运动轨迹列表的 DOM 自 6.11.0 起由 gdm-form 的 list 控件按 MOVES_DECL 生成——**类名即回读契约**
+    //   （readAdvancedConfig 靠 .cf-move-item / .cf-mv-* 取值），动声明必须同步 test/unit/moves-schema.test.mjs；
+    //   坐标/拉伸/旋转/耗时留空 = null（跟随样式/本体/时长），不是 0，见声明里的 nullable。
 
 import { DEFAULT_DURATION, DEFAULT_SHADOW_PLACEHOLDER, DEFAULT_SHINE_PLACEHOLDER, DEFAULT_ZINDEX, MAX_DURATION } from './10-constants.js';
 import { $, $$, fmt, status } from './20-utils.js';
@@ -19,6 +23,7 @@ import { sendModel } from './60-network.js';
 import { previewSub } from './70-preview.js';
 import { panelMode, setPanelMode } from './80-ui.js';
 import { openExportDialog, syncAdvEnableUI } from './90-preset-ui.js';
+import { buildParamControl } from './gdm-form.js';
 
     // 切换 字幕模式 / 弹幕模式（预设、样式区在两种模式间复用）
     function switchPanelMode(mode) {
@@ -279,68 +284,71 @@ import { openExportDialog, syncAdvEnableUI } from './90-preset-ui.js';
         return rest === 0 ? `${sign}${turns}圈` : `${sign}${turns}圈${rest}°`;
     }
 
-    // 渲染运动轨迹列表
+    // 运动轨迹的字段声明：**消费方持有**的「schema → DOM」声明（类名/文案/占位/范围全在这里，
+    // gdm-form 不认识任何 cf- 类名）。类名是与回读侧的契约——readAdvancedConfig 用
+    // `#cf-moves .cf-move-item` + 逐个 `.cf-mv-*` 取值，交互侧靠 .cf-move-toggle / .cf-move-del /
+    // .cf-rot-inp / .cf-rot-hint / .cf-move-adv 收敛；两侧任一侧改类名都会让
+    // test/unit/moves-schema.test.mjs 的双向比对红灯（这条耦合没有编译期保护，只能靠测试钉住）。
+    // 条目 16 字段 = 4 坐标（占位「跟随样式」）+ 4 拉伸（「跟随本体」）+ 6 旋转 + 耗时（「跟随时长」）+ 缓动；
+    // 坐标/拉伸/旋转/耗时 nullable（留空 = null = 跟随样式/本体/时长），缓动默认 linear。
+    const MOVES_DECL = {
+        key: 'moves',
+        label: '运动轨迹',
+        type: 'list',
+        itemClass: 'cf-move-item',            // 回读：$$('#cf-moves .cf-move-item')
+        removeClass: 'cf-move-del',
+        removeLabel: '删除',
+        min: 1,
+        minMessage: '至少保留一个动作',
+        item: [
+            { key: 'fromX', label: '起点', row: 'from', letter: 'X', type: 'number', className: 'cf-mv-fx', nullable: true, min: 0, max: 100, placeholder: '跟随样式' },
+            { key: 'fromY', row: 'from', letter: 'Y', type: 'number', className: 'cf-mv-fy', nullable: true, min: 0, max: 100, placeholder: '跟随样式' },
+            { key: 'toX', label: '终点', row: 'to', letter: 'X', type: 'number', className: 'cf-mv-tx', nullable: true, min: 0, max: 100, placeholder: '跟随样式' },
+            { key: 'toY', row: 'to', letter: 'Y', type: 'number', className: 'cf-mv-ty', nullable: true, min: 0, max: 100, placeholder: '跟随样式' },
+            { key: 'moveTime', label: '耗时', row: 'time', type: 'number', className: 'cf-mv-mt', nullable: true, min: 100, max: MAX_DURATION, step: 100, placeholder: '跟随时长', after: { text: 'ms', style: 'font-size:11px;color:#999' } },
+            { key: 'timingFunction', label: '缓动', row: 'time', type: 'select', className: 'cf-mv-tf', choices: TIMING_FUNCS, default: 'linear' },
+        ],
+        advanced: {
+            label: '⚙ 高级',
+            expandedLabel: '▲ 收起',
+            className: 'cf-move-adv',
+            toggleClass: 'cf-move-toggle',
+            after: 'to',                      // 子区插在「终点」行之后、「耗时」行之前（与旧模板的 DOM 顺序一致）
+            fields: [
+                { key: 'fromScaleX', label: '起点拉伸', row: 'fs', letter: 'X', type: 'number', className: 'cf-mv-fsx', nullable: true, min: 0.1, max: 5, step: 0.1, placeholder: '跟随本体' },
+                { key: 'fromScaleY', row: 'fs', letter: 'Y', type: 'number', className: 'cf-mv-fsy', nullable: true, min: 0.1, max: 5, step: 0.1, placeholder: '跟随本体' },
+                { key: 'toScaleX', label: '终点拉伸', row: 'ts', letter: 'X', type: 'number', className: 'cf-mv-tsx', nullable: true, min: 0.1, max: 5, step: 0.1, placeholder: '跟随本体' },
+                { key: 'toScaleY', row: 'ts', letter: 'Y', type: 'number', className: 'cf-mv-tsy', nullable: true, min: 0.1, max: 5, step: 0.1, placeholder: '跟随本体' },
+                { key: 'fromRotateX', label: '起点旋转', row: 'fr', letter: 'X', type: 'number', className: 'cf-mv-frx cf-rot-inp', nullable: true, min: -3600, max: 3600, placeholder: '0', hint: { className: 'cf-rot-hint', format: rotateLabel } },
+                { key: 'fromRotateY', row: 'fr', letter: 'Y', type: 'number', className: 'cf-mv-fry cf-rot-inp', nullable: true, min: -3600, max: 3600, placeholder: '0', hint: { className: 'cf-rot-hint', format: rotateLabel } },
+                { key: 'fromRotateZ', row: 'fr', letter: 'Z', type: 'number', className: 'cf-mv-frz cf-rot-inp', nullable: true, min: -3600, max: 3600, placeholder: '0', hint: { className: 'cf-rot-hint', format: rotateLabel } },
+                { key: 'toRotateX', label: '终点旋转', row: 'tr', letter: 'X', type: 'number', className: 'cf-mv-trx cf-rot-inp', nullable: true, min: -3600, max: 3600, placeholder: '0', hint: { className: 'cf-rot-hint', format: rotateLabel } },
+                { key: 'toRotateY', row: 'tr', letter: 'Y', type: 'number', className: 'cf-mv-try cf-rot-inp', nullable: true, min: -3600, max: 3600, placeholder: '0', hint: { className: 'cf-rot-hint', format: rotateLabel } },
+                { key: 'toRotateZ', row: 'tr', letter: 'Z', type: 'number', className: 'cf-mv-trz cf-rot-inp', nullable: true, min: -3600, max: 3600, placeholder: '0', hint: { className: 'cf-rot-hint', format: rotateLabel } },
+            ],
+        },
+    };
+
+    // 运动轨迹列表控件（renderMoves 挂载；addMove 委托它的添加逻辑）
+    let movesCtl = null;
+    const getMoves = () => advancedConfig.moves;
+    const setMoves = (arr) => { advancedConfig.moves = arr; };
+
+    // 渲染运动轨迹列表：DOM 由列表控件的 MOVES_DECL 声明生成（类名/结构/占位/初值折叠态与旧模板逐项一致）。
+    // 外部调用点（95-events 的首次同步、resetAdvancedConfig）不变——本函数名与签名保持不变。
     function renderMoves() {
         const box = $('#cf-moves');
         if (!box) return;
-        box.innerHTML = advancedConfig.moves.map((mv, i) => {
-            // null 坐标显示为空输入框（占位提示「跟随样式」），显式数字才显示数值
-            const v = (n) => (n == null ? '' : n);
-            return `
-            <div class="cf-move-item" data-i="${i}">
-                <button type="button" class="cf-move-toggle">⚙ 高级</button>
-                <button type="button" class="cf-move-del">删除</button>
-                <div class="cf-row"><label>起点</label>X<input type="number" class="cf-mv-fx" min="0" max="100" placeholder="跟随样式" value="${v(mv.fromX)}">Y<input type="number" class="cf-mv-fy" min="0" max="100" placeholder="跟随样式" value="${v(mv.fromY)}"></div>
-                <div class="cf-row"><label>终点</label>X<input type="number" class="cf-mv-tx" min="0" max="100" placeholder="跟随样式" value="${v(mv.toX)}">Y<input type="number" class="cf-mv-ty" min="0" max="100" placeholder="跟随样式" value="${v(mv.toY)}"></div>
-                <div class="cf-move-adv" style="display:none">
-                    <div class="cf-row"><label>起点拉伸</label>X<input type="number" class="cf-mv-fsx" min="0.1" max="5" step="0.1" placeholder="跟随本体" value="${v(mv.fromScaleX)}">Y<input type="number" class="cf-mv-fsy" min="0.1" max="5" step="0.1" placeholder="跟随本体" value="${v(mv.fromScaleY)}"></div>
-                    <div class="cf-row"><label>终点拉伸</label>X<input type="number" class="cf-mv-tsx" min="0.1" max="5" step="0.1" placeholder="跟随本体" value="${v(mv.toScaleX)}">Y<input type="number" class="cf-mv-tsy" min="0.1" max="5" step="0.1" placeholder="跟随本体" value="${v(mv.toScaleY)}"></div>
-                    <div class="cf-row"><label>起点旋转</label>X<input type="number" class="cf-mv-frx cf-rot-inp" min="-3600" max="3600" placeholder="0" value="${v(mv.fromRotateX)}"><span class="cf-rot-hint"></span>Y<input type="number" class="cf-mv-fry cf-rot-inp" min="-3600" max="3600" placeholder="0" value="${v(mv.fromRotateY)}"><span class="cf-rot-hint"></span>Z<input type="number" class="cf-mv-frz cf-rot-inp" min="-3600" max="3600" placeholder="0" value="${v(mv.fromRotateZ)}"><span class="cf-rot-hint"></span></div>
-                    <div class="cf-row"><label>终点旋转</label>X<input type="number" class="cf-mv-trx cf-rot-inp" min="-3600" max="3600" placeholder="0" value="${v(mv.toRotateX)}"><span class="cf-rot-hint"></span>Y<input type="number" class="cf-mv-try cf-rot-inp" min="-3600" max="3600" placeholder="0" value="${v(mv.toRotateY)}"><span class="cf-rot-hint"></span>Z<input type="number" class="cf-mv-trz cf-rot-inp" min="-3600" max="3600" placeholder="0" value="${v(mv.toRotateZ)}"><span class="cf-rot-hint"></span></div>
-                </div>
-                <div class="cf-row"><label>耗时</label><input type="number" class="cf-mv-mt" min="100" max="${MAX_DURATION}" step="100" placeholder="跟随时长" value="${v(mv.moveTime)}"><span style="font-size:11px;color:#999">ms</span>
-                    <label>缓动</label><select class="cf-mv-tf">${TIMING_FUNCS.map((f) => `<option value="${f.value}"${f.value === (mv.timingFunction || 'linear') ? ' selected' : ''}>${f.label}</option>`).join('')}</select>
-                </div>
-            </div>`;
-        }).join('');
-        // 删除按钮
-        box.querySelectorAll('.cf-move-del').forEach((btn) => {
-            btn.addEventListener('click', () => {
-                const i = +btn.closest('.cf-move-item').dataset.i;
-                if (advancedConfig.moves.length <= 1) { status('至少保留一个动作', 'err'); return; }
-                advancedConfig.moves.splice(i, 1);
-                renderMoves();
-            });
-        });
-        // 「⚙ 高级」折叠：展开/收起该段的拉伸+旋转高级项
-        box.querySelectorAll('.cf-move-toggle').forEach((btn) => {
-            btn.addEventListener('click', () => {
-                const adv = btn.closest('.cf-move-item').querySelector('.cf-move-adv');
-                if (!adv) return;
-                const hidden = adv.style.display === 'none';
-                adv.style.display = hidden ? '' : 'none';
-                btn.textContent = hidden ? '▲ 收起' : '⚙ 高级';
-            });
-        });
-        // 旋转圈数提示：输入变化时实时刷新旁边的「N圈M°」
-        box.querySelectorAll('.cf-rot-inp').forEach((inp) => {
-            const hint = inp.nextElementSibling;
-            const upd = () => { if (hint) hint.textContent = rotateLabel(inp.value); };
-            inp.addEventListener('input', upd);
-            upd();
-        });
+        box.innerHTML = '';
+        movesCtl = buildParamControl(MOVES_DECL, getMoves, setMoves);
+        box.appendChild(movesCtl.node);
     }
 
-    // 添加一个运动动作：坐标/缩放/旋转/耗时默认空（跟随样式/预设与顶层变换），用户可手动填数字接管
+    // 添加一个运动动作：委托列表控件的添加逻辑——空条目初值由 MOVES_DECL 推出
+    // （坐标/缩放/旋转 ⇒ null：跟随样式/本体与顶层变换；缓动 ⇒ linear），用户可手动填数字接管
     function addMove() {
-        advancedConfig.moves.push({
-            fromX: null, fromY: null, toX: null, toY: null,
-            fromScaleX: null, fromScaleY: null, toScaleX: null, toScaleY: null,
-            fromRotateX: null, fromRotateY: null, fromRotateZ: null,
-            toRotateX: null, toRotateY: null, toRotateZ: null,
-            moveTime: null, timingFunction: 'linear',
-        });
-        renderMoves();
+        if (!movesCtl) renderMoves();   // 兜底：控件还没挂（面板未渲染过）时先挂一次
+        if (movesCtl) movesCtl.add();
     }
 
     // 高级编辑「恢复默认」：重置 advancedConfig 为默认快照，并同步全部控件/开关/运动轨迹 UI
@@ -488,3 +496,5 @@ export {
 };
 // 仅供冒烟测试：不对其它 src 模块开放
 export { TIMING_FUNCS };
+// 仅供测试（test/unit/moves-schema.test.mjs 的类名双向比对：声明产出的类名 ↔ 回读侧选择器）
+export { MOVES_DECL };
