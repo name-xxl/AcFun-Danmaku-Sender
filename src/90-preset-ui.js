@@ -24,6 +24,7 @@ import {
 } from './50-engine.js';
 import { getAcfunAuthor } from './60-network.js';
 import { previewMulti } from './70-preview.js';
+import { updateSendAudit } from './80-ui.js';
 import {
     activeCompositionOf, activeEngineParamKeys, buildParamControl, clearParamSubscriptions,
     filterOptionsByKeys, subscribeToParams, validateComposition,
@@ -70,6 +71,9 @@ import {
         if (actRow) actRow.style.display = hasAny ? '' : 'none';
         syncEditorOwnedUI();
         renderPresetParams();
+        // 闸③ 常驻计数行：预设（或其组合）换了 → 展开量可能整数量级变化（无预设 1 条/字幕 ↔ KTV 27 条/字幕），
+        // 这里是「预设侧变化」的收敛点（切换/导入/删除/开发面板存为新预设都经它）
+        updateSendAudit();
     }
 
     // ============================================================
@@ -181,6 +185,7 @@ import {
             effects: preset.effects || null,
         });
         status(`💾 已保存「${preset.name}」的当前参数，刷新后生效`, 'ok');
+        updateSendAudit();
     }
 
     // 恢复当前预设为 JSON 定义的原值（清掉保存过的微调）
@@ -195,6 +200,7 @@ import {
         if (preset._origEffects) preset.effects = JSON.parse(JSON.stringify(preset._origEffects));
         renderPresetParams();
         status(`↩ 已恢复「${preset.name}」默认参数`, 'ok');
+        updateSendAudit();
     }
 
     // 按激活预设的 params 声明，动态生成参数编辑控件（控件本身由 gdm-form.buildParamControl 产出）。
@@ -217,7 +223,10 @@ import {
             const { node, sync } = buildParamControl(param,
                 () => getByPath(target.root, target.path),
                 (v) => setByPath(target.root, target.path, v),
-                (v) => status(`已调整「${param.label}」= ${v}（未保存）`, 'busy'));
+                (v) => {
+                    status(`已调整「${param.label}」= ${v}（未保存）`, 'busy');
+                    updateSendAudit();   // 参数改动会改展开量（如 KTV 的跨句分栏把每条字幕翻倍）
+                });
             subscribeToParams(sync, box);
             node.classList.add('cf-preset-param-row');
             return node;

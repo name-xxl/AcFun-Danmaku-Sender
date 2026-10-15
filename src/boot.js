@@ -199,6 +199,17 @@ import { bindEvents } from './95-events.js';
         #cf-sub-panel .cf-status.ok{background:#f6ffed;color:#52c41a}
         #cf-sub-panel .cf-status.err{background:#fff1f0;color:#f5222d}
         #cf-sub-panel .cf-status.busy{background:#fffbe6;color:#faad14}
+        /* 计数闸（闸③）：常驻计数行 + 大批量二次确认的内联面板（不用原生 confirm，白名单只减不增） */
+        #cf-sub-panel .cf-audit{font-size:11px;line-height:16px;color:#999;word-break:break-all}
+        #cf-sub-panel .cf-audit.ok{color:#52c41a}
+        #cf-sub-panel .cf-audit.warn{color:#faad14}
+        #cf-sub-panel .cf-audit.bad{color:#f5222d}
+        #cf-audit-confirm .cf-dev-sub b{color:#fd4c5d}
+        #cf-audit-confirm .cf-audit-btn{border:1px solid #999;background:#f4f4f4;color:#666;border-radius:3px;padding:4px 12px;font-size:12px;height:24px;line-height:16px;cursor:pointer}
+        #cf-audit-confirm .cf-audit-btn:hover:not(:disabled){background:#e5e5e5}
+        #cf-audit-confirm .cf-audit-btn.primary{background:#fd4c5d;border-color:#fd4c5d;color:#fff}
+        #cf-audit-confirm .cf-audit-btn.primary:hover:not(:disabled){background:#ec4556;border-color:#ec4556}
+        #cf-audit-confirm .cf-audit-btn:disabled{opacity:.4;cursor:not-allowed}
         /* 导出预设的「可调字段」勾选层 */
         .cf-adjust-picker{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:2147483000;display:flex;align-items:center;justify-content:center}
         .cf-adjust-dlg{width:300px;max-height:70vh;display:flex;flex-direction:column;background:#fff;border-radius:6px;box-shadow:0 6px 24px rgba(0,0,0,.2);overflow:hidden}

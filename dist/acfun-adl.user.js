@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AcFun 高级弹幕层编辑器 (ADL)
 // @namespace    https://github.com/acfun-danmaku-sender
-// @version      6.13.1
+// @version      6.14.0
 // @description  视频的高级弹幕层编辑器：给视频加一条可发布的字幕/特效轨道，所见即所得，发送只是导出。导入 SRT/ASS/LRC，预设特效，彩排通过才可导出。
 // @author       name_xxl
 // @match        *://www.acfun.cn/v/ac*
@@ -649,6 +649,137 @@
       rotate: { x: num(adv.rotate.x, 0), y: num(adv.rotate.y, 0), z: num(adv.rotate.z, 0) },
       scale: { x: num(adv.scale.x, 1), y: num(adv.scale.y, 1), z: num(adv.scale.z, 1) }
     };
+  }
+  var LINT_REQUIRED_FIELDS = [
+    ["id", "string"],
+    ["content", "string"],
+    ["contentType", "number"],
+    ["startTime", "number"],
+    ["startTimeNow", "boolean"],
+    ["zIndex", "number"],
+    ["anchor", "number"],
+    ["wordStyle", "object"],
+    ["animationFrames", "array"],
+    ["durationTime", "number"],
+    ["rotate", "object"],
+    ["scale", "object"]
+  ];
+  var LINT_CONTENT_MAX = 255;
+  var LINT_MOVE_TIME_MIN = 100;
+  var LINT_POS_MIN = -1e3;
+  var LINT_POS_MAX = 1e3;
+  var LINT_TIMING_KEYWORDS = ["linear", "ease-in", "ease-out", "ease-in-out", "ease", "step-start", "step-end"];
+  var LINT_NUM_RE = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?$/i;
+  function lintNum(v) {
+    return typeof v === "number" && isFinite(v);
+  }
+  function lintKind(v) {
+    if (Array.isArray(v)) return "array";
+    if (v === null) return "null";
+    if (typeof v === "number" && !isFinite(v)) return "NaN";
+    return typeof v;
+  }
+  function lintBrief(v) {
+    try {
+      return JSON.stringify(v);
+    } catch (e) {
+      return String(v);
+    }
+  }
+  function lintTimingFunction(fn) {
+    if (typeof fn !== "string") return false;
+    const v = fn.trim();
+    if (LINT_TIMING_KEYWORDS.indexOf(v) >= 0) return true;
+    if (/^steps\([^()]*\)$/i.test(v)) return true;
+    const m = /^cubic-bezier\(\s*([^()]*)\s*\)$/i.exec(v);
+    if (!m) return false;
+    const parts = m[1].split(",").map((s) => s.trim());
+    if (parts.length !== 4 || !parts.every((s) => LINT_NUM_RE.test(s))) return false;
+    const n = parts.map(Number);
+    return n[0] >= 0 && n[0] <= 1 && n[2] >= 0 && n[2] <= 1;
+  }
+  function lintFrame(f, i, add) {
+    const at = "model.animationFrames[" + i + "]";
+    if (!f || typeof f !== "object" || Array.isArray(f)) {
+      add("frame-shape", "帧不是对象（" + lintKind(f) + "）", at);
+      return;
+    }
+    ["from", "to"].forEach((end) => {
+      const e = f[end];
+      if (!e || typeof e !== "object") {
+        add("frame-shape", "缺 " + end + " 端点（§五 帧表）", at + "." + end);
+        return;
+      }
+      ["pos", "scale", "rotate"].forEach((grp) => {
+        const g = e[grp];
+        if (!g || typeof g !== "object") {
+          add("frame-shape", "缺 " + end + "." + grp + "（§五 帧表）", at + "." + end + "." + grp);
+          return;
+        }
+        ["x", "y", "z"].forEach((axis) => {
+          if (!lintNum(g[axis])) add("frame-number", end + "." + grp + "." + axis + " 不是有限数字（" + lintBrief(g[axis]) + "）（§五 帧表）", at + "." + end + "." + grp + "." + axis);
+        });
+      });
+      if (e.pos && typeof e.pos === "object") {
+        ["x", "y"].forEach((axis) => {
+          const v = e.pos[axis];
+          if (lintNum(v) && (v < LINT_POS_MIN || v > LINT_POS_MAX)) {
+            add("frame-pos-range", end + ".pos." + axis + "=" + v + " 量级不对（超出 ±" + LINT_POS_MAX + "：屏幕外坐标合法，但这是像素当百分比那类错的量级）", at + "." + end + ".pos." + axis);
+          }
+        });
+      }
+    });
+    const mt = f.moveTime;
+    if (mt === void 0 || mt === null) add("frame-move-time", "缺 moveTime（§五 帧表）", at + ".moveTime");
+    else if (!lintNum(mt)) add("frame-move-time", "moveTime 不是有限数字（" + lintBrief(mt) + "）", at + ".moveTime");
+    else if (mt < LINT_MOVE_TIME_MIN) add("frame-move-time", "moveTime=" + mt + " 低于下限 " + LINT_MOVE_TIME_MIN + "ms（buildAnimationFrames 的 Math.max(100, …)）", at + ".moveTime");
+    if (!lintTimingFunction(f.timingFunction)) {
+      add("timing-function", "timingFunction=" + lintBrief(f.timingFunction) + " 不是 CSS 合法缓动（§六：只有标准关键字与 cubic-bezier 生效；非法值 = 弹幕停在 (0,0)）", at + ".timingFunction");
+    }
+  }
+  function lintModel(model) {
+    const problems = [];
+    const add = (rule, detail, path) => {
+      problems.push({ rule, detail, path });
+    };
+    if (!model || typeof model !== "object" || Array.isArray(model)) {
+      add("model-shape", "model 不是对象（" + lintKind(model) + "）", "model");
+      return { ok: false, problems };
+    }
+    LINT_REQUIRED_FIELDS.forEach(([key, type]) => {
+      const v = model[key];
+      if (v === void 0 || v === null) {
+        add("field-missing", "缺必填字段 " + key + "（§五 顶层结构）", "model." + key);
+        return;
+      }
+      if (lintKind(v) !== type) add("field-type", key + " 类型应为 " + type + "，实际 " + lintKind(v) + "（§五 字段表）", "model." + key);
+    });
+    if (typeof model.id === "string" && !/^[0-9a-f]{40}$/i.test(model.id)) {
+      add("id-format", "id 不是 40 位 hex：" + lintBrief(model.id) + "（§五）", "model.id");
+    }
+    if (typeof model.content === "string") {
+      const cps = Array.from(model.content.trim()).length;
+      if (!cps) add("content-empty", "content 为空（trim 后无字符）：没有可渲染文本（§二 body）", "model.content");
+      else if (cps > LINT_CONTENT_MAX) add("content-too-long", "content 有 " + cps + " 个码点，超过 " + LINT_CONTENT_MAX + " 上限（§二 body「截断到 255 字符」）", "model.content");
+    }
+    if (lintNum(model.contentType) && model.contentType !== 0 && model.contentType !== 1) {
+      add("content-type-value", "contentType=" + model.contentType + " 不在 {0,1}（0=文本 Text，1=Base64 图片，§五 / §六）", "model.contentType");
+    }
+    if (lintNum(model.zIndex) && (model.zIndex < 1 || model.zIndex > 99)) {
+      add("z-index-range", "zIndex=" + model.zIndex + " 超出 [1,99]（§五 字段表）", "model.zIndex");
+    }
+    if (lintNum(model.anchor) && !(Number.isInteger(model.anchor) && model.anchor >= 0 && model.anchor <= 8)) {
+      add("anchor-range", "anchor=" + model.anchor + " 不是 0~8 的整数（§五 / §六 九宫格）", "model.anchor");
+    }
+    if (lintNum(model.durationTime) && !(model.durationTime > 0)) {
+      add("duration-time", "durationTime=" + model.durationTime + " 非正数：入池窗口 startTime < n ≤ startTime+durationTime 恒空（§五 / §十二 附录 #2）", "model.durationTime");
+    }
+    const frames = model.animationFrames;
+    if (Array.isArray(frames)) {
+      if (!frames.length) add("frames-empty", "animationFrames 为空数组：没有任何运动帧可渲染（§五 / §十二 T1）", "model.animationFrames");
+      frames.forEach((f, i) => lintFrame(f, i, add));
+    }
+    return { ok: problems.length === 0, problems };
   }
 
   // src/50-engine.js
@@ -1426,6 +1557,77 @@
     return parseSRT(text);
   }
 
+  // src/55-audit.js
+  var POOL_IMPACT_BANDS = [
+    { level: "low", label: "低", max: 400, note: "下界 ≈ 32 秒以内的连续发送（无预设的整集、或拆字预设的十几句）" },
+    { level: "mid", label: "中", max: 2e3, note: "下界 ≈ 33 秒 ~ 2 分 40 秒（拆字预设下一集中段到整集的量）" },
+    { level: "high", label: "高", max: Infinity, note: "下界 > 2 分 40 秒的连续写入，风控面暴露显著" }
+  ];
+  var SEND_CONFIRM_MODEL_THRESHOLD = 1e3;
+  function poolImpact(modelCount) {
+    const n = Math.max(0, Math.round(num(modelCount)));
+    for (let i = 0; i < POOL_IMPACT_BANDS.length; i++) {
+      if (n <= POOL_IMPACT_BANDS[i].max) {
+        const b = POOL_IMPACT_BANDS[i];
+        return { level: b.level, label: b.label, note: b.note, modelCount: n };
+      }
+    }
+  }
+  function estimatedSendMs(modelCount, subtitleCount, intervalMs) {
+    const n = Math.max(0, Math.round(num(modelCount)));
+    const s = Math.max(0, Math.round(num(subtitleCount)));
+    const gap = Math.max(0, Math.round(num(intervalMs)));
+    return n * MODEL_SEND_INTERVAL + Math.max(0, s - 1) * gap;
+  }
+  function auditSend(targets, subs3) {
+    const list = targets || [];
+    const all = subs3 || [];
+    const problems = [];
+    const expandErrors = [];
+    let modelCount = 0;
+    const idxOf = /* @__PURE__ */ new Map();
+    all.forEach((s, i) => {
+      if (!idxOf.has(s)) idxOf.set(s, i);
+    });
+    for (let k = 0; k < list.length; k++) {
+      const s = list[k];
+      const subListIndex = idxOf.has(s) ? idxOf.get(s) : -1;
+      const seq = k + 1;
+      const prevTime = k > 0 ? list[k - 1].time : null;
+      let models;
+      try {
+        const cfg = cfgFor(s);
+        models = expandSub(s, cfg, calcDurationMs(subListIndex), seq, prevTime);
+      } catch (e) {
+        modelCount += 1;
+        expandErrors.push({
+          subtitleIndex: k,
+          subListIndex,
+          seq,
+          message: e && e.message ? e.message : String(e)
+        });
+        continue;
+      }
+      modelCount += models.length;
+      for (let j = 0; j < models.length; j++) {
+        const r = lintModel(models[j]);
+        if (r.ok) continue;
+        r.problems.forEach((p) => {
+          problems.push({
+            subtitleIndex: k,
+            subListIndex,
+            seq,
+            modelIndex: j,
+            rule: p.rule,
+            detail: p.detail,
+            path: p.path
+          });
+        });
+      }
+    }
+    return { subtitleCount: list.length, modelCount, problems, expandErrors };
+  }
+
   // src/60-network.js
   function gmPost(url, data) {
     return new Promise((resolve, reject) => {
@@ -2158,6 +2360,7 @@
             </div>
         </div>
         <div class="cf-panel-actions" id="cf-subtitle-actions">
+            <div class="cf-audit" id="cf-audit">本次将发送 0 条弹幕</div>
             <div class="cf-actions-row">
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-all">▶ 预览全部</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-pause">⏸ 暂停预览</button>
@@ -2280,11 +2483,119 @@
         if (bRow) bRow.style.display = hasBilingual ? "" : "none";
         renderList();
         status(`📂 ${file.name} · ${subs.length} 条${hasBilingual ? "（检测到双语）" : ""}`, "ok");
+        updateSendAudit();
       } catch (e) {
         status("解析失败: " + e.message, "err");
       }
     };
     r.readAsText(file, "utf-8");
+  }
+  var AUDIT_MIN_INTERVAL = 250;
+  var auditTimer = null;
+  var auditLastAt = 0;
+  function auditTargets() {
+    return subs.filter((s) => s.selected && s.st !== "ok");
+  }
+  function paintSendAudit() {
+    const el = $("#cf-audit");
+    if (!el) return;
+    if (!subs.length) {
+      el.className = "cf-audit";
+      el.textContent = "本次将发送 0 条弹幕";
+      el.title = "";
+      return;
+    }
+    const targets = auditTargets();
+    if (!targets.length) {
+      el.className = "cf-audit";
+      el.textContent = "本次没有可发送的字幕（未选中或已全部发送）";
+      el.title = "";
+      return;
+    }
+    const a = auditSend(targets, subs);
+    const bad = a.problems.length;
+    const impact = poolImpact(a.modelCount);
+    const parts = [`本次将发送 ${a.modelCount} 条弹幕`, `输出校验 ${bad ? `⛔ ${bad} 条病灶` : "✅"}`, `池影响 ${impact.label}`];
+    if (a.expandErrors.length) parts.push(`⚠ ${a.expandErrors.length} 条展开失败`);
+    el.className = "cf-audit " + (bad ? "bad" : a.expandErrors.length ? "warn" : "ok");
+    el.textContent = parts.join(" · ");
+    el.title = `选中 ${a.subtitleCount} 条字幕 → 展开 ${a.modelCount} 条弹幕` + (bad ? `；首条病灶：${a.problems[0].rule} @ ${a.problems[0].path}` : "") + "（发送前会再算一遍，那一次才是闸）";
+  }
+  function updateSendAudit() {
+    if (!$("#cf-audit") || sending) return;
+    const now = Date.now();
+    const wait = AUDIT_MIN_INTERVAL - (now - auditLastAt);
+    if (wait > 0) {
+      if (!auditTimer) auditTimer = setTimeout(() => {
+        auditTimer = null;
+        updateSendAudit();
+      }, wait);
+      return;
+    }
+    auditLastAt = now;
+    paintSendAudit();
+  }
+  function fmtSpan(ms) {
+    const s = Math.round(Math.max(0, ms) / 1e3);
+    if (s < 60) return s + " 秒";
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + " 分" + (s % 60 ? " " + s % 60 + " 秒" : "");
+    return Math.floor(m / 60) + " 小时 " + m % 60 + " 分";
+  }
+  var CONFIRM_LOCK_MS = 3e3;
+  function confirmHighVolume(info) {
+    return new Promise((resolve) => {
+      const old = $("#cf-audit-confirm");
+      if (old) old.remove();
+      const mask = document.createElement("div");
+      mask.id = "cf-audit-confirm";
+      mask.className = "cf-dev-panel-mask";
+      mask.innerHTML = `
+                <div class="cf-dev-dlg">
+                    <p class="cf-dev-title">⚠️ 大批量发送二次确认</p>
+                    <p class="cf-dev-sub">本次将发送 <b>${info.modelCount}</b> 条弹幕（${info.subtitleCount} 条字幕），
+                        超过二次确认阈值 ${SEND_CONFIRM_MODEL_THRESHOLD} 条 · 池影响 <b>${info.impact.label}</b>：${escapeHtml(info.impact.note)}<br>
+                        按句内 ${MODEL_SEND_INTERVAL}ms/条 + 句间 ${info.intervalMs}ms 估算，连续发送至少约 ${fmtSpan(info.estimatedMs)}（不含网络耗时）。<br>
+                        发送后无法撤回。</p>
+                    <div class="cf-dev-foot">
+                        <button type="button" class="cf-audit-btn" data-act="cancel">取消</button>
+                        <button type="button" class="cf-audit-btn primary" data-act="go" disabled></button>
+                    </div>
+                </div>`;
+      const goBtn = mask.querySelector("[data-act=go]");
+      let left = Math.ceil(CONFIRM_LOCK_MS / 1e3);
+      let done = false;
+      let timer = null;
+      const arm = () => {
+        goBtn.textContent = `仍要发送（${left}s）`;
+        timer = setTimeout(() => {
+          left -= 1;
+          if (left > 0) {
+            arm();
+            return;
+          }
+          goBtn.disabled = false;
+          goBtn.textContent = "仍要发送";
+        }, 1e3);
+      };
+      const finish = (ok) => {
+        if (done) return;
+        done = true;
+        if (timer) clearTimeout(timer);
+        mask.remove();
+        resolve(ok);
+      };
+      goBtn.disabled = true;
+      arm();
+      mask.querySelector("[data-act=cancel]").addEventListener("click", () => finish(false));
+      mask.addEventListener("click", (e) => {
+        if (e.target === mask) finish(false);
+      });
+      goBtn.addEventListener("click", () => {
+        if (!goBtn.disabled) finish(true);
+      });
+      document.body.appendChild(mask);
+    });
   }
   async function startSend() {
     if (!subs.length) {
@@ -2301,21 +2612,39 @@
       status("❌ 未获取到视频信息，请确认已登录且在视频页", "err");
       return;
     }
-    let totalModels = 0;
-    for (let k = 0; k < targets.length; k++) {
-      const s = targets[k];
-      try {
-        const cfg = cfgFor(s);
-        const prevTime = k > 0 ? targets[k - 1].time : null;
-        totalModels += expandSub(s, cfg, calcDurationMs(subs.indexOf(s)), k + 1, prevTime).length;
-      } catch (e) {
-        totalModels += 1;
-      }
+    const audit = auditSend(targets, subs);
+    if (audit.problems.length) {
+      status(`⛔ 输出校验未通过：${audit.problems.length} 条病灶，已阻止发送（详见控制台）`, "err");
+      log(`⛔ 输出校验未通过，已阻止发送（病灶 ${audit.problems.length} 条，下面逐条列出：字幕序号 / rule @ path / detail）`);
+      audit.problems.forEach((p) => {
+        const t = targets[p.subtitleIndex];
+        log(`  #${p.seq} ${t ? fmt(t.time) + " " + t.text : "(字幕已不在发送序列)"} → ${p.rule} @ ${p.path}
+     ${p.detail}`);
+      });
+      return;
     }
+    audit.expandErrors.forEach((e) => {
+      log(`⚠ ${e.subListIndex >= 0 ? fmt(subs[e.subListIndex].time) + " " : ""}第 ${e.seq} 条字幕展开失败（按 1 条计入）：${e.message}`);
+    });
+    const totalModels = audit.modelCount;
     if (!confirm(`发送 ${targets.length} 条字幕（展开 ${totalModels} 条弹幕）？
 发送后无法撤回。`)) {
       status("已取消");
       return;
+    }
+    if (totalModels > SEND_CONFIRM_MODEL_THRESHOLD) {
+      const go = await confirmHighVolume({
+        modelCount: totalModels,
+        subtitleCount: audit.subtitleCount,
+        impact: poolImpact(totalModels),
+        estimatedMs: estimatedSendMs(totalModels, audit.subtitleCount, sendInterval),
+        intervalMs: sendInterval
+      });
+      if (!go) {
+        status(`已取消：${totalModels} 条弹幕超过二次确认阈值 ${SEND_CONFIRM_MODEL_THRESHOLD}`);
+        return;
+      }
+      status(`⚠ 已二次确认大批量发送：${totalModels} 条弹幕`, "busy");
     }
     setSending(true);
     setCancelled(false);
@@ -2352,6 +2681,7 @@
     const ok = subs.filter((s) => s.st === "ok").length;
     const fail = subs.filter((s) => s.st === "err").length;
     if (!cancelled) status(`✅ 完成 · 成功 ${ok} 条${fail ? ` · 失败 ${fail} 条` : ""}`, "ok");
+    updateSendAudit();
   }
   function resetAll() {
     if (sending) {
@@ -2362,6 +2692,7 @@
     renderList();
     setBtns(false);
     status("↺ 已重置");
+    updateSendAudit();
   }
   function removeSubs() {
     if (sending) {
@@ -2378,6 +2709,7 @@
       uz.classList.remove("ok");
     }
     status("🗑 已移除字幕");
+    updateSendAudit();
   }
   function toggleFold() {
     setListFolded(!listFolded);
@@ -2411,6 +2743,7 @@
     const sel = subs.filter((s) => s.selected).length;
     status(mode === "all" ? `✅ 已全选 ${sel} 条` : `🔄 反选，当前选中 ${sel} 条`, "ok");
     applySliceOffset();
+    updateSendAudit();
   }
   function selectByRange() {
     if (!subs.length) {
@@ -2433,6 +2766,7 @@
     renderList();
     status(`✅ 已选中 ${fmt(startMs)} ~ ${fmt(endMs)} 内的 ${n} 条`, "ok");
     applySliceOffset();
+    updateSendAudit();
   }
   function syncTimeOffsetInput() {
     const el = $("#cf-time-offset");
@@ -2446,6 +2780,7 @@
       storeSet("timeOffset", timeOffset);
       syncTimeOffsetInput();
       status(`🔪 切片模式：偏移已设为 -${fmt(first.time)}（首条 ${fmt(first.time)}）`, "busy");
+      updateSendAudit();
     }
   }
   function toggleSliceMode() {
@@ -2458,6 +2793,7 @@
       setTimeOffset(timeOffsetBackup);
       syncTimeOffsetInput();
       status("🔪 已退出切片模式，恢复手动偏移", "ok");
+      updateSendAudit();
     }
   }
   function setIsOurView(v) {
@@ -2940,6 +3276,7 @@
     if (actRow) actRow.style.display = hasAny ? "" : "none";
     syncEditorOwnedUI();
     renderPresetParams();
+    updateSendAudit();
   }
   var TRANSFORM_OWNS = {
     "none": [],
@@ -3032,6 +3369,7 @@
       effects: preset.effects || null
     });
     status(`💾 已保存「${preset.name}」的当前参数，刷新后生效`, "ok");
+    updateSendAudit();
   }
   function restoreActivePresetOptions() {
     const preset = getActivePreset();
@@ -3045,6 +3383,7 @@
     if (preset._origEffects) preset.effects = JSON.parse(JSON.stringify(preset._origEffects));
     renderPresetParams();
     status(`↩ 已恢复「${preset.name}」默认参数`, "ok");
+    updateSendAudit();
   }
   function renderPresetParams() {
     const box = $("#cf-preset-params");
@@ -3064,7 +3403,10 @@
         param,
         () => getByPath(target.root, target.path),
         (v) => setByPath(target.root, target.path, v),
-        (v) => status(`已调整「${param.label}」= ${v}（未保存）`, "busy")
+        (v) => {
+          status(`已调整「${param.label}」= ${v}（未保存）`, "busy");
+          updateSendAudit();
+        }
       );
       subscribeToParams(sync, box);
       node.classList.add("cf-preset-param-row");
@@ -4111,6 +4453,7 @@
       }
       setTimeOffset(Math.round(+e.target.value || 0));
       storeSet("timeOffset", timeOffset);
+      updateSendAudit();
     });
     $("#cf-anchor").addEventListener("click", (e) => {
       const cell = e.target.closest(".cf-anchor-cell");
@@ -4122,6 +4465,7 @@
       setBilingualMode(e.target.value);
       storeSet("bilingualMode", bilingualMode);
       status(`双语处理：${e.target.value === "auto" ? "自动上下两行" : e.target.value === "main" ? "仅主语言" : "仅副语言"}`, "ok");
+      updateSendAudit();
     });
     $("#cf-list").addEventListener("click", (e) => {
       const chk = e.target.closest(".cf-chk-item");
@@ -4132,10 +4476,12 @@
         subs[i].selected = chk.checked;
         updateCnt();
         applySliceOffset();
+        updateSendAudit();
         return;
       }
       previewSub(subs[i]);
     });
+    updateSendAudit();
   }
 
   // src/boot.js
@@ -4311,6 +4657,17 @@
         #cf-sub-panel .cf-status.ok{background:#f6ffed;color:#52c41a}
         #cf-sub-panel .cf-status.err{background:#fff1f0;color:#f5222d}
         #cf-sub-panel .cf-status.busy{background:#fffbe6;color:#faad14}
+        /* 计数闸（闸③）：常驻计数行 + 大批量二次确认的内联面板（不用原生 confirm，白名单只减不增） */
+        #cf-sub-panel .cf-audit{font-size:11px;line-height:16px;color:#999;word-break:break-all}
+        #cf-sub-panel .cf-audit.ok{color:#52c41a}
+        #cf-sub-panel .cf-audit.warn{color:#faad14}
+        #cf-sub-panel .cf-audit.bad{color:#f5222d}
+        #cf-audit-confirm .cf-dev-sub b{color:#fd4c5d}
+        #cf-audit-confirm .cf-audit-btn{border:1px solid #999;background:#f4f4f4;color:#666;border-radius:3px;padding:4px 12px;font-size:12px;height:24px;line-height:16px;cursor:pointer}
+        #cf-audit-confirm .cf-audit-btn:hover:not(:disabled){background:#e5e5e5}
+        #cf-audit-confirm .cf-audit-btn.primary{background:#fd4c5d;border-color:#fd4c5d;color:#fff}
+        #cf-audit-confirm .cf-audit-btn.primary:hover:not(:disabled){background:#ec4556;border-color:#ec4556}
+        #cf-audit-confirm .cf-audit-btn:disabled{opacity:.4;cursor:not-allowed}
         /* 导出预设的「可调字段」勾选层 */
         .cf-adjust-picker{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:2147483000;display:flex;align-items:center;justify-content:center}
         .cf-adjust-dlg{width:300px;max-height:70vh;display:flex;flex-direction:column;background:#fff;border-radius:6px;box-shadow:0 6px 24px rgba(0,0,0,.2);overflow:hidden}

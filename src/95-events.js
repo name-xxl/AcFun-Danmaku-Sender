@@ -19,7 +19,7 @@ import { previewAll, previewSub, setUseOfflinePreview, useOfflinePreview } from 
 import { stopOfflinePreview } from './71-canvas-preview.js';
 import {
     applySliceOffset, ensurePanel, loadFile, removeSubs, resetAll, selectByRange, selectRange,
-    startSend, toggleFold, togglePresetFold, toggleSliceMode, toggleStyleFold, updateCnt,
+    startSend, toggleFold, togglePresetFold, toggleSliceMode, toggleStyleFold, updateCnt, updateSendAudit,
 } from './80-ui.js';
 import {
     addMove, exportAdvancedPreset, parseManualTime, pickManualTime, previewManual,
@@ -130,6 +130,7 @@ import {
             }
             setTimeOffset(Math.round(+e.target.value || 0));
             storeSet('timeOffset', timeOffset);
+            updateSendAudit();   // 时间偏移变化 → 常驻计数行重算（startTime 会变）
         });
 
         $('#cf-anchor').addEventListener('click', (e) => {
@@ -144,6 +145,7 @@ import {
             setBilingualMode(e.target.value);
             storeSet('bilingualMode', bilingualMode);
             status(`双语处理：${e.target.value === 'auto' ? '自动上下两行' : (e.target.value === 'main' ? '仅主语言' : '仅副语言')}`, 'ok');
+            updateSendAudit();   // 双语处理方式决定「一条字幕展开成几条」，必须重算
         });
 
         // 列表点击：复选框切换选中；点其他区域预览该条
@@ -157,10 +159,14 @@ import {
                 subs[i].selected = chk.checked;
                 updateCnt();
                 applySliceOffset();
+                updateSendAudit();   // 选中项变化 → 常驻计数行重算
                 return;
             }
             previewSub(subs[i]);
         });
+
+        // 初次上屏：面板里先摆出「本次将发送 0 条弹幕」（真实数字由随后各触发点补齐）
+        updateSendAudit();
     }
 
 

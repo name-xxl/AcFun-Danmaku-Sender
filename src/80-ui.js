@@ -2,16 +2,18 @@
     //  UI（仿原生面板壳）
     // ============================================================
     // 理解卡｜我拥有：字幕模式面板 ensurePanel（约 212 行 innerHTML 骨架）、字幕列表 renderList、
-    //   startSend 批量发送循环、切片对齐、全选/反选/范围选。
-    // 我承诺：批量发送前 confirm 展示「N 条字幕 → M 条弹幕」计数；逐条 sleep(sendInterval) 节流；取消即时生效。
-    // 我永不：confirm( 全仓白名单 3 处我占 1（check 门禁盯着，只减不增）。
+    //   startSend 批量发送循环、切片对齐、全选/反选/范围选、闸③ 的常驻计数行（#cf-audit）与
+    //   大批量二次确认（confirmHighVolume）、闸② 的拒绝落点（startSend 里调 55-audit 的 auditSend）。
+    // 我承诺：批量发送前 confirm 展示「N 条字幕 → M 条弹幕」计数；发送前先过 auditSend（有病灶即拒绝）；
+    //   超过阈值的批次走内联二次确认（倒计时可撤）；逐条 sleep(sendInterval) 节流；取消即时生效。
+    // 我永不：confirm( 全仓白名单 3 处我占 1（check 门禁盯着，只减不增）——闸③ 的二次确认走内联面板，不新开 confirm(。
     // 改我前读：面板先挂 body（display:none）再由 boot.js 搬进原生面板壳——document 级查询依赖这个顺序；
     //   高级编辑区（#cf-adv-body）自 6.12.0 起**只剩空容器**，17 个控件由 35-adv-fields 的声明经
     //   85-danmaku.renderAdvancedForm 生成（事件也随生成接好）——往模板里补一行 #cf-adv-* 即造出第二真源；
     //   P3 我将被 gdm-panel 取代，别在我身上加新功能（RISKS R2 范围守门）。
 
-import { ANCHORS, DEFAULT_DURATION, FONTS, FONT_LABELS, MAX_DURATION } from './10-constants.js';
-import { $, escapeHtml, fmt, rgbToHex, sleep, status } from './20-utils.js';
+import { ANCHORS, DEFAULT_DURATION, FONTS, FONT_LABELS, MAX_DURATION, MODEL_SEND_INTERVAL } from './10-constants.js';
+import { $, escapeHtml, fmt, log, rgbToHex, sleep, status } from './20-utils.js';
 import { parseSub } from './30-parser.js';
 import {
     activePresetId, bilingualMode, cancelled, currentStyleConfig, getVideoInfo,
@@ -19,7 +21,8 @@ import {
     setSending, setSliceMode, setStyleFolded, setSubs, setTimeOffset, setTimeOffsetBackup, sliceMode,
     storeSet, styleFolded, styleSource, subs, timeOffset, timeOffsetBackup,
 } from './40-core.js';
-import { calcDurationMs, cfgFor, expandSub, getAllPresets } from './50-engine.js';
+import { cfgFor, getAllPresets } from './50-engine.js';
+import { SEND_CONFIRM_MODEL_THRESHOLD, auditSend, estimatedSendMs, poolImpact } from './55-audit.js';
 import { lastSentIds, sendDanmaku, setLastSentIds } from './60-network.js';
 import { expirePreviews, useOfflinePreview } from './70-preview.js';
 import { stopOfflinePreview } from './71-canvas-preview.js';
@@ -150,6 +153,7 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
             </div>
         </div>
         <div class="cf-panel-actions" id="cf-subtitle-actions">
+            <div class="cf-audit" id="cf-audit">本次将发送 0 条弹幕</div>
             <div class="cf-actions-row">
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-all">▶ 预览全部</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-pause">⏸ 暂停预览</button>
@@ -277,11 +281,137 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
                 if (bRow) bRow.style.display = hasBilingual ? '' : 'none';
                 renderList();
                 status(`📂 ${file.name} · ${subs.length} 条${hasBilingual ? '（检测到双语）' : ''}`, 'ok');
+                updateSendAudit();
             } catch (e) {
                 status('解析失败: ' + e.message, 'err');
             }
         };
         r.readAsText(file, 'utf-8');
+    }
+
+    // ============================================================
+    //  闸③ 计数显性化：常驻审计行（#cf-audit）+ 大批量二次确认
+    // ============================================================
+    // 数据来源与闸② 同源：同一遍 auditSend（55-audit）既出计数又出病灶，常驻行与「发送前拒绝」用的是
+    //   同一个函数、同一套展开参数——面板上看到的 N 就是发送时要发的 N（发送时再算一遍是权威判据：
+    //   两次之间预设/选中/偏移都可能变）。
+    // 重算时机（调用点分散在 95-events / 90-preset-ui）：选中项变化、字幕列表变化（装载/移除/重置）、
+    //   全选/反选/范围选、预设切换、预设参数改动、保存/恢复参数、时间偏移变化、双语处理方式变化。
+    // 节流策略：**前沿 + 尾随合并**，最小间隔 AUDIT_MIN_INTERVAL。逐字拆发预设 × 几百条字幕是重活
+    //   （实测 KTV × 300 条字幕 = 8200 条 model / 约 185ms，见 test/unit/send-audit.test.mjs 的标定输出）：
+    //   连点勾选、全选、拖参数会连着触发，逐次展开会把面板卡住。故：距上次重算 ≥ 250ms 就立即算
+    //   （点完马上看到新数字），否则只记一次尾随重算（窗口内的重复触发合并成一次）。
+    //   **最坏耗时 = 250ms 等待 + 一遍展开**（300 条 KTV 实测 185ms；1000 条字幕的 KTV 外推 ≈ 0.6s）。
+    //   展开与 lint 都是同步的，会占主线程——本片不与 Worker/分片缠斗（零依赖 + 范围守门），
+    //   只用节流把频次压住；真要消掉这 0.6s 得把 lint 挪出主线程，另立一片。
+    const AUDIT_MIN_INTERVAL = 250;
+    let auditTimer = null;
+    let auditLastAt = 0;
+
+    // 本次要发的字幕（与 startSend 的第一行同一判据）
+    function auditTargets() { return subs.filter((s) => s.selected && s.st !== 'ok'); }
+
+    function paintSendAudit() {
+        const el = $('#cf-audit');
+        if (!el) return;
+        if (!subs.length) {
+            el.className = 'cf-audit';
+            el.textContent = '本次将发送 0 条弹幕';
+            el.title = '';
+            return;
+        }
+        const targets = auditTargets();
+        if (!targets.length) {
+            el.className = 'cf-audit';
+            el.textContent = '本次没有可发送的字幕（未选中或已全部发送）';
+            el.title = '';
+            return;
+        }
+        const a = auditSend(targets, subs);
+        const bad = a.problems.length;
+        const impact = poolImpact(a.modelCount);
+        const parts = [`本次将发送 ${a.modelCount} 条弹幕`, `输出校验 ${bad ? `⛔ ${bad} 条病灶` : '✅'}`, `池影响 ${impact.label}`];
+        if (a.expandErrors.length) parts.push(`⚠ ${a.expandErrors.length} 条展开失败`);
+        el.className = 'cf-audit ' + (bad ? 'bad' : (a.expandErrors.length ? 'warn' : 'ok'));
+        el.textContent = parts.join(' · ');
+        el.title = `选中 ${a.subtitleCount} 条字幕 → 展开 ${a.modelCount} 条弹幕`
+            + (bad ? `；首条病灶：${a.problems[0].rule} @ ${a.problems[0].path}` : '')
+            + '（发送前会再算一遍，那一次才是闸）';
+    }
+
+    // 重算入口（节流见上）。发送中不重算：循环里每条都在改 st，重算既无意义又会抢主线程。
+    function updateSendAudit() {
+        if (!$('#cf-audit') || sending) return;
+        const now = Date.now();
+        const wait = AUDIT_MIN_INTERVAL - (now - auditLastAt);
+        if (wait > 0) {
+            if (!auditTimer) auditTimer = setTimeout(() => { auditTimer = null; updateSendAudit(); }, wait);
+            return;
+        }
+        auditLastAt = now;
+        paintSendAudit();
+    }
+
+    function fmtSpan(ms) {
+        const s = Math.round(Math.max(0, ms) / 1000);
+        if (s < 60) return s + ' 秒';
+        const m = Math.floor(s / 60);
+        if (m < 60) return m + ' 分' + (s % 60 ? ' ' + (s % 60) + ' 秒' : '');
+        return Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分';
+    }
+
+    // 大批量二次确认——**内联面板**，不是 confirm(（硬约束：本仓 confirm(/alert( 白名单 3 处只减不增，
+    // tools/check.mjs 盯着；复用既有那处 confirm 的措辞升级会把「发送 N 条字幕」那句话撑成半屏，也不合适）。
+    // 范式抄 90-preset-ui/openExportDialog：mask + dlg + 底部两键，关掉即 return。
+    // 「仍要发送」带 3 秒倒计时（禁用 → 可点）：越过阈值就该慢一拍，3 秒够读完数字、也够点「取消」
+    // （取消按钮全程可点，倒计时不是强制等待，是防手滑）。
+    const CONFIRM_LOCK_MS = 3000;
+    function confirmHighVolume(info) {
+        return new Promise((resolve) => {
+            const old = $('#cf-audit-confirm');
+            if (old) old.remove();
+            const mask = document.createElement('div');
+            mask.id = 'cf-audit-confirm';
+            mask.className = 'cf-dev-panel-mask';
+            mask.innerHTML = `
+                <div class="cf-dev-dlg">
+                    <p class="cf-dev-title">⚠️ 大批量发送二次确认</p>
+                    <p class="cf-dev-sub">本次将发送 <b>${info.modelCount}</b> 条弹幕（${info.subtitleCount} 条字幕），
+                        超过二次确认阈值 ${SEND_CONFIRM_MODEL_THRESHOLD} 条 · 池影响 <b>${info.impact.label}</b>：${escapeHtml(info.impact.note)}<br>
+                        按句内 ${MODEL_SEND_INTERVAL}ms/条 + 句间 ${info.intervalMs}ms 估算，连续发送至少约 ${fmtSpan(info.estimatedMs)}（不含网络耗时）。<br>
+                        发送后无法撤回。</p>
+                    <div class="cf-dev-foot">
+                        <button type="button" class="cf-audit-btn" data-act="cancel">取消</button>
+                        <button type="button" class="cf-audit-btn primary" data-act="go" disabled></button>
+                    </div>
+                </div>`;
+            const goBtn = mask.querySelector('[data-act=go]');
+            let left = Math.ceil(CONFIRM_LOCK_MS / 1000);
+            let done = false;
+            let timer = null;
+            const arm = () => {
+                goBtn.textContent = `仍要发送（${left}s）`;
+                timer = setTimeout(() => {
+                    left -= 1;
+                    if (left > 0) { arm(); return; }
+                    goBtn.disabled = false;
+                    goBtn.textContent = '仍要发送';
+                }, 1000);
+            };
+            const finish = (ok) => {
+                if (done) return;
+                done = true;
+                if (timer) clearTimeout(timer);
+                mask.remove();
+                resolve(ok);
+            };
+            goBtn.disabled = true;
+            arm();
+            mask.querySelector('[data-act=cancel]').addEventListener('click', () => finish(false));
+            mask.addEventListener('click', (e) => { if (e.target === mask) finish(false); });
+            goBtn.addEventListener('click', () => { if (!goBtn.disabled) finish(true); });
+            document.body.appendChild(mask);
+        });
     }
 
     // ============================================================
@@ -294,17 +424,40 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
         if (!targets.length) { status('没有可发送的字幕（未选中或已全部发送）', 'err'); return; }
         const v = getVideoInfo();
         if (!v || !v.videoId) { status('❌ 未获取到视频信息，请确认已登录且在视频页', 'err'); return; }
-        // 预展开计数：让用户对真实请求量有预期（一句字幕经预设可展开成几十条弹幕）
-        let totalModels = 0;
-        for (let k = 0; k < targets.length; k++) {
-            const s = targets[k];
-            try {
-                const cfg = cfgFor(s);
-                const prevTime = k > 0 ? targets[k - 1].time : null;
-                totalModels += expandSub(s, cfg, calcDurationMs(subs.indexOf(s)), k + 1, prevTime).length;
-            } catch (e) { totalModels += 1; }
+        // 闸③ 计数 + 闸② 输出 lint：一遍展开同时产出「要发多少条」和「有没有病灶」
+        // （展开参数与原计数循环逐字相同：seq = k+1、prevTime = k>0 ? targets[k-1].time : null——
+        //   这一遍是发送前的**权威判据**：面板常驻行可能已过期，这里算的才是真的要发的）
+        const audit = auditSend(targets, subs);
+        if (audit.problems.length) {
+            // 闸②：有病灶就不进入发送流程（不弹确认、不动 sending/按钮）
+            status(`⛔ 输出校验未通过：${audit.problems.length} 条病灶，已阻止发送（详见控制台）`, 'err');
+            log(`⛔ 输出校验未通过，已阻止发送（病灶 ${audit.problems.length} 条，下面逐条列出：字幕序号 / rule @ path / detail）`);
+            audit.problems.forEach((p) => {
+                const t = targets[p.subtitleIndex];
+                log(`  #${p.seq} ${t ? fmt(t.time) + ' ' + t.text : '(字幕已不在发送序列)'} → ${p.rule} @ ${p.path}`
+                    + `\n     ${p.detail}`);
+            });
+            return;
         }
+        // 展开抛错不改既有行为（原循环也是按 1 条计入后照发），只在这里留个痕迹
+        audit.expandErrors.forEach((e) => {
+            log(`⚠ ${e.subListIndex >= 0 ? fmt(subs[e.subListIndex].time) + ' ' : ''}第 ${e.seq} 条字幕展开失败`
+                + `（按 1 条计入）：${e.message}`);
+        });
+        const totalModels = audit.modelCount;
         if (!confirm(`发送 ${targets.length} 条字幕（展开 ${totalModels} 条弹幕）？\n发送后无法撤回。`)) { status('已取消'); return; }
+        // 闸③ 阈值：超过 SEND_CONFIRM_MODEL_THRESHOLD 再要一次确认（内联面板，见 confirmHighVolume）
+        if (totalModels > SEND_CONFIRM_MODEL_THRESHOLD) {
+            const go = await confirmHighVolume({
+                modelCount: totalModels,
+                subtitleCount: audit.subtitleCount,
+                impact: poolImpact(totalModels),
+                estimatedMs: estimatedSendMs(totalModels, audit.subtitleCount, sendInterval),
+                intervalMs: sendInterval,
+            });
+            if (!go) { status(`已取消：${totalModels} 条弹幕超过二次确认阈值 ${SEND_CONFIRM_MODEL_THRESHOLD}`); return; }
+            status(`⚠ 已二次确认大批量发送：${totalModels} 条弹幕`, 'busy');
+        }
 
         setSending(true); setCancelled(false); setBtns(true);
         setLastSentIds([]);   // 清空上次批次的 danmakuId，验证只针对本次发送
@@ -341,6 +494,7 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
         const ok = subs.filter((s) => s.st === 'ok').length;
         const fail = subs.filter((s) => s.st === 'err').length;
         if (!cancelled) status(`✅ 完成 · 成功 ${ok} 条${fail ? ` · 失败 ${fail} 条` : ''}`, 'ok');
+        updateSendAudit();   // 发完 st 变了，常驻行要跟着变（发送中它被 updateSendAudit 的 sending 守卫挡住）
     }
 
     function resetAll() {
@@ -349,6 +503,7 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
         stopOfflinePreview();   // 清除离线预览画布
         renderList(); setBtns(false);
         status('↺ 已重置');
+        updateSendAudit();
     }
 
     // 移除导入的字幕（清空列表）
@@ -361,6 +516,7 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
         const uz = $('#cf-drop');
         if (uz) { uz.classList.remove('ok'); }
         status('🗑 已移除字幕');
+        updateSendAudit();
     }
 
     // 折叠 / 展开字幕列表
@@ -399,6 +555,7 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
         const sel = subs.filter((s) => s.selected).length;
         status(mode === 'all' ? `✅ 已全选 ${sel} 条` : `🔄 反选，当前选中 ${sel} 条`, 'ok');
         applySliceOffset();
+        updateSendAudit();
     }
 
     // 按切片时间范围选中（单位：秒）
@@ -417,6 +574,7 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
         renderList();
         status(`✅ 已选中 ${fmt(startMs)} ~ ${fmt(endMs)} 内的 ${n} 条`, 'ok');
         applySliceOffset();
+        updateSendAudit();
     }
 
     // 同步时间偏移输入框显示
@@ -434,6 +592,7 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
             storeSet('timeOffset', timeOffset);
             syncTimeOffsetInput();
             status(`🔪 切片模式：偏移已设为 -${fmt(first.time)}（首条 ${fmt(first.time)}）`, 'busy');
+            updateSendAudit();   // 偏移变了 → startTime 变 → 常驻行重算（数量通常不变，但口径要一致）
         }
     }
 
@@ -448,6 +607,7 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
             setTimeOffset(timeOffsetBackup);
             syncTimeOffsetInput();
             status('🔪 已退出切片模式，恢复手动偏移', 'ok');
+            updateSendAudit();
         }
     }
 
@@ -456,7 +616,7 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
 export {
     applySliceOffset, ensurePanel, getDefaultNative, isOurView, loadFile, panelMode, removeSubs,
     resetAll, selectByRange, selectRange, setDefaultNative, startSend, toggleFold, togglePresetFold,
-    toggleSliceMode, toggleStyleFold, updateCnt,
+    toggleSliceMode, toggleStyleFold, updateCnt, updateSendAudit,
 };
 // 跨文件写：ESM 导入绑定只读，故本文件的两个模块级 let 走 setter（声明留原地，初始化未改）
 export function setIsOurView(v) { isOurView = v; }
