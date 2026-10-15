@@ -20,6 +20,7 @@
 10. [错误码](#十错误码)
 11. [其他弹幕接口](#十一其他弹幕接口)
 12. [Checkpoint Zero 实测（2026-10-05）](#十二checkpoint-zero-实测2026-10-05)
+13. [视频作者身份（身份感知，来源 svfeed 研究文档）](#十三视频作者身份身份感知来源-svfeed-研究文档)
 
 ---
 
@@ -565,3 +566,58 @@ model 创建 DOM 节点 + 生成 `@keyframes`」，**不是文字出现在画面
 4. **DOM 双路径**：`createDanmakuDom` 里 id 匹配 preview 正则的走**直接渲染**（无缓冲、`danmaku-g-preview` 类）；其余进 `danmakuBuffer` 骨架（上限 `danmakuBufferSize=20`，**永不清理**）。骨架期无文本、无样式（fs=12px 默认），样式在 render 时套用——骨架状态判不了 scale/wordStyle。
 5. **注入链路实证**：`loadDanmakuG` → 池 ✓（renderStatus 初始 null）→ 手动 `renderer.tick(视频毫秒)` → renderSet ✓（size=2）。即：**池与渲染集机制全部可用，最终 CSS 类切换（invisible→可见）已通到最后一环**；上屏瞬间目视与 scale 倍率确认留待 30 秒人工核验。
 6. **P3 彩排设计守则**（由 1–3 推出）：逐句「到点即注」（彩排本义）；前跳用 70-preview 时序（注入时已在窗内，天然合法）；**回跳必须先重置 `renderer._time`**；可用 `renderer.tick(视频毫秒)` 做驱动兜底。
+
+---
+
+## 十三、视频作者身份（身份感知，来源 svfeed 研究文档）
+
+> **证据等级先声明**：本节**不是本仓的实测**，而是转记自同作者的 svfeed 项目研究文档
+> （`acvideo/docs/api-research.md` 的 §3「详情与 meta 富化素材（douga/info，〔实测〕）」与 §5
+> 「内容扩展路线定性〔实测〕」里 v 页那一条）。**本仓没有独立实测这两条取数路径**，
+> `window.videoInfo` 的字段形状**只知「与 douga/info 等价」、没有逐字段核实**。
+> 因此落地代码（`src/60-network.js` 的 `videoIdentity`）把「取不到」当成一条正常分支：
+> 判 `unknown` + 往控制台打脱敏诊断（只打键名与值类型），好让用户回贴定位真实形状。
+
+用途：区分「自己的视频」与「他人的视频」（`self` / `other` / `unknown` 三态）。他人视频上工具会
+**收紧二次确认阈值**并在闸③ 常驻行给出提示（阈值取值与依据见 `src/55-audit.js`）。
+**`unknown` 绝不被当成 `self`**——不知道就不声称是自己的视频。
+
+### 路径一（主路径，本片采用）：读页面全局 `window.videoInfo`
+
+svfeed 实测（performance 时间线核对）：**v 页自身没有独立 JSON 请求**，数据由服务端直出进 v 页
+HTML；`window.videoInfo` 内嵌 douga/info 等价数据（**含 `mkey`**）但**不含**相关视频数组。
+所以主路径是**读页面全局、不发任何请求**。
+
+- ⚠️ **沙箱**：本脚本 `@grant` 含 `unsafeWindow`，页面自己挂的全局只在 `unsafeWindow` 上——
+  `window.videoInfo` 必须经 `unsafeWindow` 取（与 §七 的播放器对象同一条限制）。代码里的唯一读取口是
+  `40-core` 的 `getPageWindow()`（别在别处再写一遍 `typeof unsafeWindow` 判断）。
+- **作者 uid 的位置**（按 douga/info 的**已实测形状**取）：顶层 `user` 对象，`user.id`——实测是
+  **字符串**（`"25380695"`），昵称在 `user.name`，同对象还带 `headUrl` / `fanCount` / `signature` 等。
+- 本仓的尝试顺序（照上述形状去试，不另创路径）：
+  `videoInfo.user` → `videoInfo.detail.user` → `videoInfo.userInfo`，每一处都要求「是对象且 `id` 非空」；
+  都不中 → 判 `unknown` 并打诊断。
+- **未核实**：`window.videoInfo` 的真实顶层键清单（只知道「等价于 douga/info」）。诊断日志会打出顶层
+  键名与「像 user/author/up 的子对象」的键名+类型——那几行就是把形状钉下来的最短路径。
+
+### 路径二（本片**不采用**）：`douga/info` 网络兜底
+
+```
+GET https://api-new.app.acfun.cn/rest/app/douga/info?product=ACFUN_APP&app_version=…&dougaId=…&mkey=…
+```
+
+- svfeed 实测（dougaId=42527415 / ac48820714）：**免登录**（curl 不带 cookie 也 `result:0`），
+  回包顶层 `user` 与上文同形状（`user.id` 同样是字符串）；`mkey` 也在 `window.videoInfo` 里。
+- **何时该加**：当「路径一在真机上被证实反复取不到」时——即用户回贴的诊断显示 `videoInfo` 里
+  确实没有作者对象（不是沙箱取错、也不是页面还没出数据）。到那时本条是现成的兜底，语义与 `user.id` 完全一致。
+- **代价（本片不加的直接原因）**：要新增 `// @connect api-new.app.acfun.cn`。`@connect` 变化会让
+  Tampermonkey 判定脚本权限变更、要求用户重新授权/更新——**这是一次真实的用户打扰**，
+  不该为「可能根本不需要的兜底」顺手加上（6.16.0 的范围里也明确写了「不加任何 @grant/@connect」）。
+
+### 与自己 uid 的比对（`self` / `other` / `unknown`）
+
+- 自己的 uid 来自 `getUid()`（`src/60-network.js`）：优先 `player.uid`，回落 cookie `auth_key`（§八）——
+  可能拿到**数字**（`player.uid`）也可能拿到**字符串**（cookie 正则）。
+- **必须归一成字符串再比**：作者 id 实测是字符串，`String(ownerUid) === String(getUid())` 才是正确判据；
+  用 `===` 直接比数字与字符串会把「自己的视频」误判成他人的。
+- 未登录（拿不到自己的 uid）→ `unknown`（不是 `other`）：连「自己是谁」都不确定，不该给任何结论。
+- 闸④ 台账会把落账那一刻的三态记进条目（`gdm-ledger` 的 `identity` 字段）——他人视频上的记录更该被看见。

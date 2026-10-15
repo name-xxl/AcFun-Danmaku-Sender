@@ -204,6 +204,12 @@ import { bindEvents } from './95-events.js';
         #cf-sub-panel .cf-audit.ok{color:#52c41a}
         #cf-sub-panel .cf-audit.warn{color:#faad14}
         #cf-sub-panel .cf-audit.bad{color:#f5222d}
+        /* 身份行（6.16.0 身份感知，紧贴计数行下方）：三态各自配色——他人视频用警示黄，自己的视频用常规绿，
+           身份未知保持中性灰（不确定不该被染成危险或安全任一种脸色） */
+        #cf-sub-panel .cf-identity{font-size:11px;line-height:16px;color:#999;word-break:break-all}
+        #cf-sub-panel .cf-identity.self{color:#52c41a}
+        #cf-sub-panel .cf-identity.other{color:#faad14}
+        #cf-sub-panel .cf-identity.unknown{color:#999}
         #cf-audit-confirm .cf-dev-sub b{color:#fd4c5d}
         #cf-audit-confirm .cf-audit-btn{border:1px solid #999;background:#f4f4f4;color:#666;border-radius:3px;padding:4px 12px;font-size:12px;height:24px;line-height:16px;cursor:pointer}
         #cf-audit-confirm .cf-audit-btn:hover:not(:disabled){background:#e5e5e5}
@@ -268,6 +274,7 @@ import { bindEvents } from './95-events.js';
         #cf-ledger-panel .cf-lg-link{color:#409bef;text-decoration:none;font-family:monospace;flex:none}
         #cf-ledger-panel a.cf-lg-link:hover{text-decoration:underline}
         #cf-ledger-panel .cf-lg-meta{color:#999;font-size:11px;margin-right:auto;flex:1;min-width:0}
+        #cf-ledger-panel .cf-lg-other{color:#faad14;font-weight:600}
         #cf-ledger-panel .cf-lg-list{max-height:220px;overflow-y:auto}
         #cf-ledger-panel .cf-lg-item{display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #f7f7f7;font-size:12px}
         #cf-ledger-panel .cf-lg-item:last-child{border-bottom:none}

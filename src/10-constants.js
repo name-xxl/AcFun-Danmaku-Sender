@@ -31,6 +31,16 @@
     const DEFAULT_SHADOW_PLACEHOLDER = { x: 1, y: 1, blur: 3, color: '#000000' };   // 投影开启时的占位默认
     const DEFAULT_SHINE_PLACEHOLDER = { blur: 5, size: 2, color: '#ffd700' };       // 外发光开启时的占位默认
 
+    // —— 视频身份三态（6.16.0 身份感知）——
+    // 判定与取数在 60-network 的 videoIdentity（读 window.videoInfo 的作者 id，与 getUid() 归一后比对）；
+    // 阈值映射在 55-audit 的 confirmThresholdFor。三态标识与显示名放这里，是因为三方（判定 / 阈值 / UI）
+    // 与台账默认值都要用同一份字面量——各写一份就会漂成三个真源。
+    // unknown 是**不确定**：既不是「自己的视频」，也不放宽/收紧之外地假称知情。
+    const IDENTITY_SELF = 'self';
+    const IDENTITY_OTHER = 'other';
+    const IDENTITY_UNKNOWN = 'unknown';
+    const IDENTITY_LABELS = { self: '自己的视频', other: '他人的视频', unknown: '身份未知' };
+
     // ============================================================
     //  预设（内置 + 可导入 JSON 模板）
     //  预设 JSON 格式：{ id, name, desc, transform, options, params }
@@ -88,6 +98,7 @@ export {
     ANCHORS, BUILTIN_PRESETS, DEFAULT_ANCHOR, DEFAULT_DURATION, DEFAULT_MOVE_TIME,
     DEFAULT_POS_X, DEFAULT_POS_Y, DEFAULT_PRESET_OPTIONS, DEFAULT_SHADOW_PLACEHOLDER,
     DEFAULT_SHINE_PLACEHOLDER, DEFAULT_ZINDEX, FONTS, FONT_LABELS,
+    IDENTITY_LABELS, IDENTITY_OTHER, IDENTITY_SELF, IDENTITY_UNKNOWN,
     KTV_SUNG_COLOR, KTV_UNSUNG_COLOR, MAX_DURATION, MODEL_SEND_INTERVAL,
 };
 

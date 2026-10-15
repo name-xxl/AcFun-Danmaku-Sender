@@ -361,15 +361,16 @@ test('闸③ 常驻行：数字/校验态/池影响三段的文案与配色（�
     await sleep(300);
     CORE.setSubs(SUBS);
     withPreset('none', () => updateSendAudit());
-    assert.equal(auditEl.textContent, '本次将发送 30 条弹幕 · 输出校验 ✅ · 池影响 低',
-        '常驻行文案（数字必须与 auditSend 同源）');
+    // 6.16.0 起行尾多一段身份（本文件的桩里没有 window.videoInfo / player.uid → unknown，三态文案见 identity.test.mjs）
+    assert.equal(auditEl.textContent, '本次将发送 30 条弹幕 · 输出校验 ✅ · 池影响 低 · 身份未知',
+        '常驻行文案（数字必须与 auditSend 同源；身份段见 6.16.0）');
     assert.match(auditEl.className, /\bok\b/, '✅ 态应是 ok 配色');
     assert.match(auditEl.title, /选中 30 条字幕 → 展开 30 条弹幕/, 'title 里给出字幕数 → 弹幕数');
 
     // 态三：KTV（27.33 条/字幕）→ 820 条，池影响进「中」
     await sleep(300);
     withPreset('karaoke', () => updateSendAudit());
-    assert.equal(auditEl.textContent, '本次将发送 820 条弹幕 · 输出校验 ✅ · 池影响 中', 'KTV × 30 条字幕 = 820 条');
+    assert.equal(auditEl.textContent, '本次将发送 820 条弹幕 · 输出校验 ✅ · 池影响 中 · 身份未知', 'KTV × 30 条字幕 = 820 条');
 
     // 态四：全部取消选中
     await sleep(300);

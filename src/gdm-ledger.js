@@ -24,6 +24,9 @@
     //       sentAt     记账时刻 Date.now()（发送成功那一刻，不是入池时刻）
     //       startTime  该条弹幕的起始位置 ms（model.startTime，手动定位用）
     //       presetId / presetName  当时的预设（50-engine getActivePreset；无预设即内置「无预设」）
+    //       identity   落账那一刻的身份三态（6.16.0：self 自己的视频 / other 他人的视频 / unknown 未取到）。
+    //                  记录 6.16.0 之前的旧条目没有这个键 → 回落成 unknown（诚实：那时确实没取过）。
+    //                  用途：他人视频上的写入更该被看见（台账视图会给该视频分组打标），回查时能一眼分辨。
     //       verified / verifiedAt  是否已被 verifySent 的全片扫描确认「在池中可见」
     //   · **danmakuId 空值 / 重复的判定**：空 id **照记**（发送确已成功，内容/位置/视频仍是可核对的清理
     //     线索），只是永不参与去重与验证匹配，UI 显示「未返回 id」；重复 id **去重**（同一条弹幕在池里只有
@@ -35,6 +38,7 @@
     //     model 的批量发送会把它变成可观的同步开销（发送循环里有 80ms 节流，但没人愿意白花）。边界：只保证
     //     本模块内一致——同源另一个标签页写台账，本页看不到（刷新即同步）。
 
+import { IDENTITY_UNKNOWN } from './10-constants.js';
 import { storeGet, storeSet } from './40-core.js';
 
     // —— 存储 ——
@@ -97,6 +101,7 @@ import { storeGet, storeSet } from './40-core.js';
             startTime: pickNum(e.startTime, null),
             presetId: String(e.presetId == null ? '' : e.presetId),
             presetName: String(e.presetName == null ? '' : e.presetName),
+            identity: String(e.identity == null ? '' : e.identity) || IDENTITY_UNKNOWN,
             verified: !!e.verified,
             verifiedAt: pickNum(e.verifiedAt, null),
         };

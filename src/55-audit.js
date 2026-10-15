@@ -2,18 +2,22 @@
     //  发送前审计：闸②（输出 lint 前置）+ 闸③（计数/量级显性化）
     // ============================================================
     // 理解卡｜我拥有：auditSend（展开 + 计数 + lint 的唯一落点）、poolImpact（池影响分级）、
-    //   estimatedSendMs（发送耗时估算）、SEND_CONFIRM_MODEL_THRESHOLD（大批量二次确认阈值）。
+    //   estimatedSendMs（发送耗时估算）、SEND_CONFIRM_MODEL_THRESHOLD（大批量二次确认阈值）与
+    //   SEND_CONFIRM_MODEL_THRESHOLD_OTHER / confirmThresholdFor（6.16.0 身份感知：他人视频上收紧）。
     // 我承诺：auditSend 是**近纯**函数——只读入参 + 40-core/50-engine 的活绑定（cfgFor 读 currentStyleConfig、
     //   calcDurationMs 读模块级 subs，与 startSend 同源），不写状态、不抛错（lint 与展开抛错都在函数内收口）；
-    //   展开参数与 80-ui/startSend 原有循环**逐字相同**（seq = k+1、prevTime = k > 0 ? targets[k-1].time : null）。
-    // 我永不：不碰 DOM（UI 只读取本模块的返回）；不发网络；不因「展开抛错」推倒既有语义（照旧按 1 条计入）。
+    //   展开参数与 80-ui/startSend 原有循环**逐字相同**（seq = k+1、prevTime = k > 0 ? targets[k-1].time : null）；
+    //   confirmThresholdFor 是纯查表（只认 'other'，其余一律常值），**不读页面、不读身份**——身份由 60-network
+    //   的 videoIdentity 判定、由 80-ui 传进来，本模块不认识 DOM（谁判身份谁传状态，阈值这一层保持可单测）。
+    // 我永不：不碰 DOM（UI 只读取本模块的返回）；不发网络；不因「展开抛错」推倒既有语义（照旧按 1 条计入）；
+    //   不让 unknown 走收紧分支（它是不确定，不是「自己人」）。
     // 改我前读：① 本模块必须坐在 50-engine 之上——gdm-model **不能** import 50-engine（成环，check-deps 立刻红），
     //   所以 auditSend 放不进 gdm-model；② expandSub 必须【import 活绑定后直接调用】，别在文件顶层解构成局部
     //   变量（smoke #15 会给 50-engine 的 expandSub 装替身，解构后替身看不见）；③ calcDurationMs(idx) 读的
     //   是 40-core 的模块级 subs，故入参 subs 必须与 40-core.subs 是同一份（startSend 里本来就是同一份；
     //   单测用 setSubs 对齐），否则「第 idx 条的下一句时间」会取错——这是本模块唯一的近纯妥协点。
 
-import { MODEL_SEND_INTERVAL } from './10-constants.js';
+import { IDENTITY_OTHER, MODEL_SEND_INTERVAL } from './10-constants.js';
 import { num } from './40-core.js';
 import { lintModel } from './gdm-model.js';
 import { calcDurationMs, cfgFor, expandSub } from './50-engine.js';
@@ -50,6 +54,27 @@ import { calcDurationMs, cfgFor, expandSub } from './50-engine.js';
     //   ③ 耗时：1000 × 80ms ≈ 80 秒，越过「一次点击等一下」的心理线，用户此刻确实应该被告知总时长。
     // 与分级的关系：1000 落在「中」段（400–2000）的中后部——二次确认与「池影响 中」同时出现，两者不打架。
     const SEND_CONFIRM_MODEL_THRESHOLD = 1000;
+
+    // 他人视频上的二次确认阈值（6.16.0 身份感知收紧）——**取「低」档上界**（= POOL_IMPACT_BANDS[0].max = 400），
+    // 不另拍数字：本片所有阈值的唯一尺子是 modelCount × 80ms，而池影响分档就是这把尺子刻出来的刻度。
+    // 依据（同一个口径，一步步推）：
+    //   ① 400 × 80ms = **32 秒**连续写入下界——正是「低」档的上界（上文：低 ≤ 400 收的是无预设整集与拆字十几句）；
+    //   ② 换算成句：400 ≈ **竖排 29 句 / KTV 15 句**（按同一份实测标定的 13.67 / 27.33 条·每句，见
+    //      test/unit/send-audit.test.mjs）——副歌一段到半集的量级，不再是「顺手代发几句」；
+    //   ③ 与常值的差：同一个「池影响」刻度上往前挪一档（1000 = 80 秒下界 → 400 = 32 秒下界），
+    //      换来的是一条用户能自己复核的规则：**在他人视频上，池影响一旦不再是「低」就要再确认一次**。
+    // 为什么只收紧他人视频：他人视频上的写入是「自己单方面无法撤回」的（A 站没有删除接口，闸④ 只能记账），
+    //   同一批弹幕在别人作品下的代价高于自己作品下，所以同一把尺子上该往前挪；自己的视频不挪（别拿门槛骚扰本人）。
+    // 为什么 1000 不动：1000 已经落在「中」段内（400–2000）且被三端夹逼核过（上文），常值无需重估；
+    //   本片只是给「他人视频」这一维加了一档更严的取值——**unknown 不收紧**（不确定不是「自己人」）。
+    const SEND_CONFIRM_MODEL_THRESHOLD_OTHER = POOL_IMPACT_BANDS[0].max;
+
+    // 身份 → 二次确认阈值：**只有 other 收紧**；self / unknown 一律沿用常值 1000。
+    // unknown（读不到作者、或未登录）既不放宽也不收紧：放宽等于假装知情，收紧等于凭空怀疑——
+    //   它是不确定，按常值处理最诚实。脏输入（''、undefined、任意字符串）同样回常值。
+    function confirmThresholdFor(identityState) {
+        return identityState === IDENTITY_OTHER ? SEND_CONFIRM_MODEL_THRESHOLD_OTHER : SEND_CONFIRM_MODEL_THRESHOLD;
+    }
 
     // 按 modelCount 取池影响分级（粗粒度标签，超出上界即最高档）
     function poolImpact(modelCount) {
@@ -131,8 +156,9 @@ import { calcDurationMs, cfgFor, expandSub } from './50-engine.js';
         return { subtitleCount: list.length, modelCount, problems, expandErrors };
     }
 
-// —— ESM 导出（6.14.0 新增：闸② 的调用点 + 闸③ 的数字）——
-// 读：80-ui（发送前 lint 与常驻计数行）、90-preset-ui（预设/参数变化时重算）、95-events（选中/偏移变化时重算）。
+// —— ESM 导出（6.14.0 新增：闸② 的调用点 + 闸③ 的数字；6.16.0 加身份维度的阈值）——
+// 读：80-ui（发送前 lint 与常驻计数行、身份阈值）、90-preset-ui（预设/参数变化时重算）、95-events（选中/偏移变化时重算）。
 export {
-    POOL_IMPACT_BANDS, SEND_CONFIRM_MODEL_THRESHOLD, auditSend, estimatedSendMs, poolImpact,
+    POOL_IMPACT_BANDS, SEND_CONFIRM_MODEL_THRESHOLD, SEND_CONFIRM_MODEL_THRESHOLD_OTHER,
+    auditSend, confirmThresholdFor, estimatedSendMs, poolImpact,
 };

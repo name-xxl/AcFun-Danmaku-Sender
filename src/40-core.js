@@ -22,6 +22,12 @@ import { ADV_FIELDS } from './35-adv-fields.js';
 
     const pageWin = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
 
+    // 页面全局的读取口（6.16.0）：本脚本 @grant 含 unsafeWindow，运行时 `window` 是提权沙箱的 window，
+    // 页面自己挂的全局（player / videoInfo / H5Player…）只在 unsafeWindow 上。**所有页面全局的读取都走它**，
+    // 别在别处再写一遍 `typeof unsafeWindow` 判断——那会造出第二个沙箱桥（两处判断一分叉就是很难查的
+    // 「页面对象时有时无」）。
+    function getPageWindow() { return pageWin; }
+
     function getPlayer() {
         try {
             const p = pageWin.player;
@@ -209,7 +215,7 @@ import { ADV_FIELDS } from './35-adv-fields.js';
 export {
     ADJUSTABLE_FIELDS, DEFAULT_ADVANCED_CONFIG, activePresetId, advancedConfig,
     applySavedOptions, bilingualMode, cancelled, clamp, currentStyleConfig, customPresets,
-    getPlayer, getVideoInfo, listFolded, normalizeFont, num, persistCustomPresets, playVideo,
+    getPageWindow, getPlayer, getVideoInfo, listFolded, normalizeFont, num, persistCustomPresets, playVideo,
     pauseVideo, presetFolded, previewPaused, savePresetOptions, seekTo, sendInterval, sending,
     sliceMode, storeGet, storeSet, styleFolded, styleSource, subs, subs2, timeOffset,
     timeOffsetBackup,

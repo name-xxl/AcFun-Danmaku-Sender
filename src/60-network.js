@@ -1,21 +1,26 @@
     // ============================================================
     //  发送
     // ============================================================
-    // 理解卡｜我拥有：gmPost/sendModel/sendDanmaku/verifySent/getUid/getAcfunAuthor——全部对外网络的唯一出口；
-    //   闸④ 的接线落点（sendModel 的返回值 → ledgerRecordSentModel → gdm-ledger 台账）。
+    // 理解卡｜我拥有：gmPost/sendModel/sendDanmaku/verifySent/getUid/getAcfunAuthor/videoIdentity——全部对外网络的
+    //   唯一出口 + 身份读取（6.16.0 加 videoIdentity：这是谁的作品）；闸④ 的接线落点（sendModel 的返回值 →
+    //   ledgerRecordSentModel → gdm-ledger 台账，落账时带上当时的身份三态）。
     // 我承诺：sendModel 参数与 A 站原生请求逐字段一致（请求层 color 是十进制、wordStyle.color 是 #rrggbb，两套口径别混）；
     //   句内节流 MODEL_SEND_INTERVAL=80ms、句间 sendInterval 默认 400ms（风控底线，RISKS R3）；
     //   成功的 danmakuId 既记入 lastSentIds 供 verifySent 匹配，也由 sendModel **带出来**
-    //   （6.15.0 起返回 `{ ok: true, id, videoId }`，此前只 return true）供台账逐条落账。
+    //   （6.15.0 起返回 `{ ok: true, id, videoId }`，此前只 return true）供台账逐条落账；
+    //   videoIdentity 只读页面全局，**取数失败一律返回 unknown 并自诊断**，绝不抛、绝不猜。
     // 我永不：不做渲染/预览（那是 70/71 的职责）；「结果未知（可能已发送）」时绝不自动重试——重发前必须先 verifySent；
-    //   台账记账失败绝不冒泡（记账是尽力而为，发送结果才是主线）。
+    //   台账记账失败绝不冒泡（记账是尽力而为，发送结果才是主线）；**videoIdentity 不发任何网络请求**（不加 douga/info
+    //   兜底——那要新增 @connect，见 API.md §十三 的「何时该加」）。
     // 改我前读：verifySent 复刻播放器 pollByPosition 20 秒窗口全片扫描（new-danmaku/list 不返回高级弹幕）；
-    //   uid 在 cookie 的 auth_key（字符串，严格相等比较）；错误码 128019–128024 有人话映射；
+    //   uid 在 cookie 的 auth_key（字符串）；**作者 id 与自己的 uid 都必须 String() 归一后再比**——实测作者 id 是
+    //   字符串 `"25380695"`，而 getUid() 可能来自 player.uid（数字）或 cookie 正则（字符串），`===` 直接比会漏判
+    //   「自己的视频」；**页面对象必须经 unsafeWindow 取**（本文件用 40-core 的 getPageWindow，见 API.md §七 ⚠️）；
     //   **sendModel 的返回值有两个消费者**（sendDanmaku 的循环、85-danmaku 的单发），改形状要同时改那两处。
 
-import { MODEL_SEND_INTERVAL } from './10-constants.js';
-import { log, sleep, status } from './20-utils.js';
-import { cancelled, getPlayer, getVideoInfo, subs } from './40-core.js';
+import { IDENTITY_OTHER, IDENTITY_SELF, IDENTITY_UNKNOWN, MODEL_SEND_INTERVAL } from './10-constants.js';
+import { getByPath, log, sleep, status } from './20-utils.js';
+import { cancelled, getPageWindow, getPlayer, getVideoInfo, subs } from './40-core.js';
 import { calcDurationMs, expandSub, getActivePreset } from './50-engine.js';
 import { ledgerMarkVerified, ledgerRecord } from './gdm-ledger.js';
 
@@ -93,7 +98,8 @@ import { ledgerMarkVerified, ledgerRecord } from './gdm-ledger.js';
     // 返回值与记账无关，只为测试可断言；**任何失败都在这里收掉**，绝不影响发送结果、绝不抛给 startSend。
     // 字段来源：id 取 sendModel 的返回（可能为空串——A 站没返回 danmakuId 时照记，见 gdm-ledger 头注）；
     //   内容/起点位置取真正发出去的那个 model；视频取当前视频（含番剧标记，决定清理清单里的链接形态）；
-    //   预设取当前激活预设（getActivePreset 是纯查表，成本可忽略）。
+    //   预设取当前激活预设（getActivePreset 是纯查表，成本可忽略）；
+    //   身份（6.16.0）取落账这一刻的 videoIdentity().state——他人视频上的记录在台账里更该被看见（台账视图会给分组打标）。
     function ledgerRecordSentModel(model, ret) {
         try {
             const v = getVideoInfo();
@@ -107,6 +113,7 @@ import { ledgerMarkVerified, ledgerRecord } from './gdm-ledger.js';
                 startTime: (model && model.startTime != null) ? model.startTime : null,
                 presetId: (preset && preset.id) || '',
                 presetName: (preset && preset.name) || '',
+                identity: videoIdentity().state,
             });
         } catch (e) {
             log('⚠ 台账记录失败（不影响发送）: ' + e.message);
@@ -255,9 +262,134 @@ import { ledgerMarkVerified, ledgerRecord } from './gdm-ledger.js';
         return uid ? 'uid:' + uid : '';
     }
 
+    // ============================================================
+    //  身份感知（6.16.0）：这是谁的作品？
+    // ============================================================
+    // videoIdentity() → { state: 'self' | 'other' | 'unknown', ownerUid, ownerName, source }
+    //
+    // **主路径 = 读页面全局，不发请求**：v 页自身没有独立 JSON 请求，服务端把 douga/info 等价数据直出进
+    //   HTML，脚本在页面里能直接读 `window.videoInfo`（**含 mkey**）——取数路径与出处见 API.md §十三
+    //   （来源是 svfeed 项目的实测文档，**本仓没有独立实测**）。页面全局必须经 unsafeWindow 取（本文件用
+    //   40-core 的 getPageWindow；@grant 含 unsafeWindow 时 window 是沙箱 window，见 API.md §七 ⚠️）。
+    //
+    // 尝试顺序（照 douga/info 的**已实测形状**去取，不自己另创路径）：
+    //   ① videoInfo.user        —— douga/info 回包顶层就是这个形状，作者 uid 在 `user.id`（**字符串**）
+    //   ② videoInfo.detail.user —— 嵌套一层（同族回包里的常见包裹）
+    //   ③ videoInfo.userInfo    —— 视频卡家族里的富用户对象键名
+    //   三处都要求「是对象且 id 非空」；都不中 → **unknown**（不猜），并把诊断打到控制台（见下）。
+    //   注：window.videoInfo 的形状**没有逐字段核实过**（只知「与 douga/info 等价」），所以这三条路径是
+    //   「按已实测形状去试」，也正是取不到时要打诊断的原因——用户把诊断贴回来才能定位真实形状。
+    //
+    // 三态判定（**归一成字符串再比**：作者 id 实测是字符串，自己的 uid 可能是数字或字符串）：
+    //   自己的 uid 拿得到 + 作者 id 相等 → self；拿得到 + 不相等 → other；
+    //   作者 id 取不到，或自己的 uid 取不到（未登录）→ **unknown**。
+    //   **unknown 绝不当成 self**（不知道就不声称是自己的视频）：未登录连「自己是谁」都不确定，
+    //   归入 unknown 而不是 other——它是不确定，不该被当成任何一方的结论。
+    // 放在本模块的理由：它是 getUid()（自己的身份）的同一族读取，且闸④ 台账落账（ledgerRecordSentModel）
+    //   也在这里——换模块会让「落账带身份」要么跨层取值、要么成环（gdm-ledger 已在 60 的下游）。
+
+    const VIDEO_OWNER_PATHS = ['user', 'detail.user', 'userInfo'];
+
+    // 诊断只打**键名与值类型**，不打值本身——用户可以把这几行安全地贴回来定位真实形状
+    const IDENTITY_DIAG_MAX_KEYS = 60;
+    const IDENTITY_DIAG_MAX_SUBKEYS = 40;
+    let identityDiagSig = null;   // 上一次已打过的诊断签名（同一页面同一种失败不重复刷屏）
+
+    function valueType(v) {
+        if (v === null) return 'null';
+        if (Array.isArray(v)) return 'array(' + v.length + ')';
+        return typeof v;
+    }
+
+    // 读不到的当场自诊断（**硬要求**：绝不静默 unknown）。返回诊断行数组，便于测试直接断言。
+    function identityDiagnostic(vi) {
+        const lines = [];
+        if (!vi) {
+            lines.push('window.videoInfo 不存在 / 不是对象（v 页本应由服务端直出该全局；不在 v 页，或页面结构变了）');
+            lines.push('已尝试的路径: ' + VIDEO_OWNER_PATHS.join(' → ') + '（无从尝试：没有 videoInfo）');
+            return lines;
+        }
+        let keys = [];
+        try { keys = Object.keys(vi); } catch (e) { keys = []; }
+        lines.push('window.videoInfo 顶层键（' + keys.length + ' 个）: ' + keys.slice(0, IDENTITY_DIAG_MAX_KEYS).join(', '));
+        keys.slice(0, IDENTITY_DIAG_MAX_KEYS).forEach((k) => {
+            try {
+                const v = vi[k];
+                if (!v || typeof v !== 'object' || Array.isArray(v)) return;
+                const sub = Object.keys(v);
+                // 「像作者」判据：键名像 user/author/up，或子对象自带 id —— 只报这一类，避免把整个 videoInfo 倒出来
+                if (!/user|author|up/i.test(k) && sub.indexOf('id') < 0) return;
+                lines.push('  ' + k + '.{ ' + sub.slice(0, IDENTITY_DIAG_MAX_SUBKEYS)
+                    .map((x) => x + ': ' + valueType(v[x])).join(', ') + ' }');
+            } catch (e) {
+                lines.push('  ' + k + ': <读取抛错：' + ((e && e.message) || e) + '>');
+            }
+        });
+        lines.push('已尝试的路径: ' + VIDEO_OWNER_PATHS.join(' → ') + '（都取不到「对象且 id 非空」的作者）');
+        return lines;
+    }
+
+    function logIdentityOnce(sig, text) {
+        if (sig === identityDiagSig) return;
+        identityDiagSig = sig;
+        log(text);
+    }
+
+    // 按路径表取作者（返回第一个「对象且 id 非空」的候选）
+    function ownerCandidate(vi) {
+        for (let i = 0; i < VIDEO_OWNER_PATHS.length; i++) {
+            const path = VIDEO_OWNER_PATHS[i];
+            let u;
+            try { u = getByPath(vi, path); } catch (e) { u = undefined; }
+            if (!u || typeof u !== 'object') continue;
+            let id, name;
+            try { id = u.id; name = u.name; } catch (e) { continue; }
+            if (id === null || id === undefined || String(id) === '') continue;
+            return { ownerUid: String(id), ownerName: String(name == null ? '' : name), path };
+        }
+        return null;
+    }
+
+    // 三态判定。**不抛**：页面全局读不到、形状不对、只要 id 的 getter 一炸，一律退回 unknown + 诊断。
+    function videoIdentity() {
+        let vi = null;
+        try {
+            const w = getPageWindow();
+            const raw = w ? w.videoInfo : null;
+            if (raw && typeof raw === 'object') vi = raw;
+        } catch (e) { vi = null; }
+
+        const found = vi ? ownerCandidate(vi) : null;
+        if (!found) {
+            const lines = identityDiagnostic(vi);
+            logIdentityOnce('no-owner|' + lines.join('|'),
+                '⚠ 身份感知取不到视频作者 → 判定 unknown（**不当作自己的视频**）。'
+                + '请把下面几行贴回作者（只有键名与类型，没有值）：\n  ' + lines.join('\n  '));
+            return { state: IDENTITY_UNKNOWN, ownerUid: '', ownerName: '', source: '' };
+        }
+
+        const selfUid = String(getUid() || '');
+        if (!selfUid) {
+            // 未登录（或拿不到自己的 uid）：作者读到了，但「我是谁」不知道 → unknown（不收紧、也绝不声称是自己的视频）
+            logIdentityOnce('no-self',
+                '⚠ 身份感知拿不到自己的 uid（未登录？cookie 无 auth_key 且 player.uid 缺失）→ 判定 unknown。'
+                + '作者 uid 读到了：' + found.ownerUid + '（未作比较）');
+            return { state: IDENTITY_UNKNOWN, ownerUid: found.ownerUid, ownerName: found.ownerName, source: found.path };
+        }
+
+        const state = (found.ownerUid === selfUid) ? IDENTITY_SELF : IDENTITY_OTHER;
+        return { state, ownerUid: found.ownerUid, ownerName: found.ownerName, source: found.path };
+    }
+
 
 // —— ESM 导出（6.8.0 迁移）——
-export { getAcfunAuthor, getUid, lastSentIds, ledgerRecordSentModel, sendDanmaku, sendModel, verifySent };
+export {
+    getAcfunAuthor, getUid, lastSentIds, ledgerRecordSentModel, sendDanmaku, sendModel, verifySent,
+    videoIdentity,
+};
+// 仅供测试：清掉「同一种身份取数失败只打一次日志」的签名（单测要在同一进程里反复造取数失败场景）。
+// 生产代码不调用它——一次会话里同一页面同一种失败只该打一行。
+export function resetIdentityDiagnostic() { identityDiagSig = null; }
 // 跨文件写：ESM 导入绑定只读，80-ui 发起新批次时清空 lastSentIds 走此 setter（声明留原地，初始化未改）
 export function setLastSentIds(v) { lastSentIds = v; }
 // 仅供冒烟测试（#15 探针给发送循环装替身）：不对其它 src 模块开放

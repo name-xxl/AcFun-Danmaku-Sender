@@ -2,19 +2,23 @@
     //  UI（仿原生面板壳）
     // ============================================================
     // 理解卡｜我拥有：字幕模式面板 ensurePanel（约 212 行 innerHTML 骨架）、字幕列表 renderList、
-    //   startSend 批量发送循环、切片对齐、全选/反选/范围选、闸③ 的常驻计数行（#cf-audit）与
-    //   大批量二次确认（confirmHighVolume）、闸② 的拒绝落点（startSend 里调 55-audit 的 auditSend）、
-    //   闸④ 台账入口按钮（#cf-ledger-btn——只是入口，视图与全部逻辑在 gdm-ledger-ui / gdm-ledger）。
+    //   startSend 批量发送循环、切片对齐、全选/反选/范围选、闸③ 的常驻计数行（#cf-audit）与**身份行**
+    //   （#cf-identity，6.16.0：三态文案 + 他人视频的常驻提示）、大批量二次确认（confirmHighVolume）、
+    //   闸② 的拒绝落点（startSend 里调 55-audit 的 auditSend）、闸④ 台账入口按钮（#cf-ledger-btn——
+    //   只是入口，视图与全部逻辑在 gdm-ledger-ui / gdm-ledger）。
     // 我承诺：批量发送前 confirm 展示「N 条字幕 → M 条弹幕」计数；发送前先过 auditSend（有病灶即拒绝）；
-    //   超过阈值的批次走内联二次确认（倒计时可撤）；逐条 sleep(sendInterval) 节流；取消即时生效。
+    //   超过阈值的批次走内联二次确认（倒计时可撤），**阈值按身份取**（他人视频收紧，见 55-audit
+    //   confirmThresholdFor，发送前那一刻重取身份）；逐条 sleep(sendInterval) 节流；取消即时生效；
+    //   身份行不点任何东西就可见（他人视频的提示是定位宣言的兑现机制，不是装饰）。
     // 我永不：confirm( 全仓白名单 3 处我占 1（check 门禁盯着，只减不增）——闸③ 的二次确认与闸④ 的清空
-    //   都走内联面板，不新开 confirm(。
+    //   都走内联面板，不新开 confirm(；**首次 confirm 的措辞不再加料**（身份信息走常驻行，不让那句撑成半屏）；
+    //   不在本文件判身份（判定在 60-network 的 videoIdentity、阈值在 55-audit，我这里只显示与传参）。
     // 改我前读：面板先挂 body（display:none）再由 boot.js 搬进原生面板壳——document 级查询依赖这个顺序；
     //   高级编辑区（#cf-adv-body）自 6.12.0 起**只剩空容器**，17 个控件由 35-adv-fields 的声明经
     //   85-danmaku.renderAdvancedForm 生成（事件也随生成接好）——往模板里补一行 #cf-adv-* 即造出第二真源；
     //   P3 我将被 gdm-panel 取代，别在我身上加新功能（RISKS R2 范围守门）。
 
-import { ANCHORS, DEFAULT_DURATION, FONTS, FONT_LABELS, MAX_DURATION, MODEL_SEND_INTERVAL } from './10-constants.js';
+import { ANCHORS, DEFAULT_DURATION, FONTS, FONT_LABELS, IDENTITY_LABELS, IDENTITY_OTHER, IDENTITY_UNKNOWN, MAX_DURATION, MODEL_SEND_INTERVAL } from './10-constants.js';
 import { $, escapeHtml, fmt, log, rgbToHex, sleep, status } from './20-utils.js';
 import { parseSub } from './30-parser.js';
 import {
@@ -24,8 +28,10 @@ import {
     storeSet, styleFolded, styleSource, subs, timeOffset, timeOffsetBackup,
 } from './40-core.js';
 import { cfgFor, getAllPresets } from './50-engine.js';
-import { SEND_CONFIRM_MODEL_THRESHOLD, auditSend, estimatedSendMs, poolImpact } from './55-audit.js';
-import { lastSentIds, sendDanmaku, setLastSentIds } from './60-network.js';
+import {
+    SEND_CONFIRM_MODEL_THRESHOLD, auditSend, confirmThresholdFor, estimatedSendMs, poolImpact,
+} from './55-audit.js';
+import { lastSentIds, sendDanmaku, setLastSentIds, videoIdentity } from './60-network.js';
 import { expirePreviews, useOfflinePreview } from './70-preview.js';
 import { stopOfflinePreview } from './71-canvas-preview.js';
 
@@ -156,6 +162,9 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
         </div>
         <div class="cf-panel-actions" id="cf-subtitle-actions">
             <div class="cf-audit" id="cf-audit">本次将发送 0 条弹幕</div>
+            <!-- 身份行（6.16.0）：三态文案 + 他人视频的常驻提示。**不点任何东西就可见**——
+                 「这是他人的视频」这句必须在导出/发送之前就摆在眼前，而不是藏在二次确认里 -->
+            <div class="cf-identity" id="cf-identity"></div>
             <div class="cf-actions-row">
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-all">▶ 预览全部</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-pause">⏸ 暂停预览</button>
@@ -225,6 +234,9 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
         // 之后 switchView 会把它移到原生面板容器内
         panelEl.style.display = 'none';
         (document.body || document.documentElement).appendChild(panelEl);
+        // 身份行首绘（6.16.0）：面板一出现就有身份文案，不必等任何事件触发重算。
+        // 副作用是**启动即做一次身份取数**——取不到时会在这里打出诊断日志（这正是要的：用户一回贴就能定位）。
+        paintIdentity(identityNow());
         return panelEl;
     }
 
@@ -314,8 +326,63 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
     // 本次要发的字幕（与 startSend 的第一行同一判据）
     function auditTargets() { return subs.filter((s) => s.selected && s.st !== 'ok'); }
 
+    // ============================================================
+    //  身份行（6.16.0 身份感知）：三态文案 + 他人视频的常驻提示
+    // ============================================================
+    // 身份 + 按身份取的阈值：**一次取数**，身份行与计数行共用同一份（两行各读一次就可能不一致）。
+    // 阈值来源：55-audit 的 confirmThresholdFor（只有 other 收紧），与 startSend 用的是同一个函数——
+    //   两行里显示的数字就是发送那一刻真正会用的那个。
+    function identityNow() {
+        const identity = videoIdentity();
+        return { identity, threshold: confirmThresholdFor(identity.state) };
+    }
+
+    // 位置：闸③ 常驻行正下方（#cf-identity），同处 .cf-panel-actions——**不点任何东西就可见**，
+    //   这就是「导出之前插一栏提示」那句要求的兑现机制（不是装饰，也不藏在二次确认里）。
+    // 身份与「要发多少条」无关，故计数行的每个分支（无字幕 / 无选中 / 正常）都画它。
+    // 文案口径：只陈述「我们读到了什么」与「这次的二次确认阈值是多少」，不做恐吓；
+    //   unknown 分两句——**读不到作者**与**拿不到自己的 uid（未登录）**是两种不同的不确定，
+    //   提示也不同（前者让用户回贴控制台诊断，后者提示登录态）。
+    function paintIdentity(info) {
+        const el = $('#cf-identity');
+        if (!el) return;
+        const identity = info.identity;
+        const threshold = info.threshold;
+        const owner = identity.ownerName ? '（UP：@' + identity.ownerName + '）' : '';
+        let text;
+        if (identity.state === IDENTITY_OTHER) {
+            text = '⚠️ 他人的视频' + owner + ' · 二次确认阈值已收紧到 ' + threshold + ' 条'
+                + '（池影响一旦不再是「低」就要再确认一次）· 建议先与 UP 主沟通';
+        } else if (identity.state === IDENTITY_UNKNOWN) {
+            text = identity.ownerUid
+                ? '❓ 身份未知（作者 @' + (identity.ownerName || identity.ownerUid) + ' 读到了，但拿不到自己的 uid：未登录？）'
+                    + ' · 阈值按常值 ' + threshold + ' 条，不收紧'
+                : '❓ 身份未知（读不到视频作者） · 阈值按常值 ' + threshold + ' 条，不收紧'
+                    + ' · 取数诊断已打到控制台（F12）';
+        } else {
+            text = '🎬 自己的视频' + owner + ' · 二次确认阈值 ' + threshold + ' 条（常值）';
+        }
+        el.className = 'cf-identity ' + identity.state;
+        el.textContent = text;
+        el.title = '身份判定：' + (IDENTITY_LABELS[identity.state] || identity.state)
+            + '｜作者 uid：' + (identity.ownerUid || '(未取到)')
+            + '｜取数路径：' + (identity.source || '(未命中)')
+            + '（读 window.videoInfo，路径与出处见 API.md §十三）'
+            + '｜二次确认阈值：' + threshold + ' 条'
+            + (identity.state === IDENTITY_OTHER ? '（他人视频收紧：池影响一旦不再是「低」即拦）' : '（常值）');
+    }
+
+    // 常驻计数行里的身份片段（三态各自一句短文案）：other 必须把收紧后的阈值摆出来——
+    //   用户得能一眼看出「为什么这次比平常严」，而不必去点开二次确认。
+    function identitySegment(info) {
+        if (info.identity.state === IDENTITY_OTHER) return '⚠ 他人的视频（阈值 ' + info.threshold + '）';
+        return IDENTITY_LABELS[info.identity.state] || IDENTITY_LABELS.unknown;
+    }
+
     function paintSendAudit() {
         const el = $('#cf-audit');
+        const ident = identityNow();
+        paintIdentity(ident);   // 身份行：与计数无关，每个分支都要画（#cf-identity 不在就静默跳过）
         if (!el) return;
         if (!subs.length) {
             el.className = 'cf-audit';
@@ -335,6 +402,7 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
         const impact = poolImpact(a.modelCount);
         const parts = [`本次将发送 ${a.modelCount} 条弹幕`, `输出校验 ${bad ? `⛔ ${bad} 条病灶` : '✅'}`, `池影响 ${impact.label}`];
         if (a.expandErrors.length) parts.push(`⚠ ${a.expandErrors.length} 条展开失败`);
+        parts.push(identitySegment(ident));
         el.className = 'cf-audit ' + (bad ? 'bad' : (a.expandErrors.length ? 'warn' : 'ok'));
         el.textContent = parts.join(' · ');
         el.title = `选中 ${a.subtitleCount} 条字幕 → 展开 ${a.modelCount} 条弹幕`
@@ -363,11 +431,27 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
         return Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分';
     }
 
+    // 二次确认面板里那句「为什么是这个阈值」——他人视频上必须写明收紧的来源与力度：否则用户只看到一个
+    // 比平时小的数字，不知道自己搞错了、还是工具改了。文本进的是内联面板的 innerHTML，只拼自家常量与数字。
+    function thresholdNote(identity, threshold) {
+        if (identity.state === IDENTITY_OTHER) {
+            return '超过二次确认阈值 <b>' + threshold + '</b> 条（⚠ 他人的视频：阈值已从 '
+                + SEND_CONFIRM_MODEL_THRESHOLD + ' 收紧到 ' + threshold
+                + '——池影响一旦不再是「低」就要再确认一次，建议先与 UP 主沟通）';
+        }
+        if (identity.state === IDENTITY_UNKNOWN) {
+            return '超过二次确认阈值 <b>' + threshold + '</b> 条（身份未知：按常值把关，不收紧也不放宽）';
+        }
+        return '超过二次确认阈值 <b>' + threshold + '</b> 条';
+    }
+
     // 大批量二次确认——**内联面板**，不是 confirm(（硬约束：本仓 confirm(/alert( 白名单 3 处只减不增，
     // tools/check.mjs 盯着；复用既有那处 confirm 的措辞升级会把「发送 N 条字幕」那句话撑成半屏，也不合适）。
     // 范式抄 90-preset-ui/openExportDialog：mask + dlg + 底部两键，关掉即 return。
     // 「仍要发送」带 3 秒倒计时（禁用 → 可点）：越过阈值就该慢一拍，3 秒够读完数字、也够点「取消」
     // （取消按钮全程可点，倒计时不是强制等待，是防手滑）。
+    // 6.16.0：阈值本身由调用方按身份算好传进来（info.threshold / info.thresholdNote）——本函数不认识
+    //   身份，只负责把「为什么这次是这个数」如实念出来（他人视频上阈值更严时必须写在面板里）。
     const CONFIRM_LOCK_MS = 3000;
     function confirmHighVolume(info) {
         return new Promise((resolve) => {
@@ -380,7 +464,7 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
                 <div class="cf-dev-dlg">
                     <p class="cf-dev-title">⚠️ 大批量发送二次确认</p>
                     <p class="cf-dev-sub">本次将发送 <b>${info.modelCount}</b> 条弹幕（${info.subtitleCount} 条字幕），
-                        超过二次确认阈值 ${SEND_CONFIRM_MODEL_THRESHOLD} 条 · 池影响 <b>${info.impact.label}</b>：${escapeHtml(info.impact.note)}<br>
+                        ${info.thresholdNote} · 池影响 <b>${info.impact.label}</b>：${escapeHtml(info.impact.note)}<br>
                         按句内 ${MODEL_SEND_INTERVAL}ms/条 + 句间 ${info.intervalMs}ms 估算，连续发送至少约 ${fmtSpan(info.estimatedMs)}（不含网络耗时）。<br>
                         发送后无法撤回。</p>
                     <div class="cf-dev-foot">
@@ -448,18 +532,25 @@ import { stopOfflinePreview } from './71-canvas-preview.js';
                 + `（按 1 条计入）：${e.message}`);
         });
         const totalModels = audit.modelCount;
+        // 身份（6.16.0）：与计数同理——**这一刻读的才算数**（面板常驻行的身份可能已过期：页面全局这会儿
+        //   才挂上、或用户刚登录）。阈值由 55-audit 的 confirmThresholdFor 按身份取：他人视频收紧，其余常值。
+        const identity = videoIdentity();
+        const threshold = confirmThresholdFor(identity.state);
         if (!confirm(`发送 ${targets.length} 条字幕（展开 ${totalModels} 条弹幕）？\n发送后无法撤回。`)) { status('已取消'); return; }
-        // 闸③ 阈值：超过 SEND_CONFIRM_MODEL_THRESHOLD 再要一次确认（内联面板，见 confirmHighVolume）
-        if (totalModels > SEND_CONFIRM_MODEL_THRESHOLD) {
+        // 闸③ 阈值：超过（按身份取的）阈值再要一次确认（内联面板，见 confirmHighVolume）
+        if (totalModels > threshold) {
             const go = await confirmHighVolume({
                 modelCount: totalModels,
                 subtitleCount: audit.subtitleCount,
                 impact: poolImpact(totalModels),
                 estimatedMs: estimatedSendMs(totalModels, audit.subtitleCount, sendInterval),
                 intervalMs: sendInterval,
+                threshold,
+                thresholdNote: thresholdNote(identity, threshold),
             });
-            if (!go) { status(`已取消：${totalModels} 条弹幕超过二次确认阈值 ${SEND_CONFIRM_MODEL_THRESHOLD}`); return; }
-            status(`⚠ 已二次确认大批量发送：${totalModels} 条弹幕`, 'busy');
+            if (!go) { status(`已取消：${totalModels} 条弹幕超过二次确认阈值 ${threshold}`); return; }
+            status(`⚠ 已二次确认大批量发送：${totalModels} 条弹幕`
+                + (identity.state === IDENTITY_OTHER ? '（他人的视频：阈值已收紧）' : ''), 'busy');
         }
 
         setSending(true); setCancelled(false); setBtns(true);

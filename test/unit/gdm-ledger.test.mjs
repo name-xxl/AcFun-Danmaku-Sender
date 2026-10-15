@@ -111,8 +111,9 @@ test('记录与分组查询：字段全集固定、写入顺序、按视频分�
     assert.equal(list.length, 4);
     assert.deepEqual(list.map((e) => e.danmakuId), ['101', '102', '201', '301'], 'ledgerList 按写入顺序（旧→新）');
     assert.deepEqual(Object.keys(list[0]).sort(),
-        ['bangumi', 'content', 'danmakuId', 'presetId', 'presetName', 'sentAt', 'startTime', 'verified', 'verifiedAt', 'vid'].sort(),
-        '字段全集固定（normalize 是唯一入口）');
+        ['bangumi', 'content', 'danmakuId', 'identity', 'presetId', 'presetName', 'sentAt', 'startTime', 'verified', 'verifiedAt', 'vid'].sort(),
+        '字段全集固定（normalize 是唯一入口；6.16.0 起多一个 identity）');
+    assert.equal(list[0].identity, 'unknown', '6.16.0：未传 identity 的条目回落 unknown（诚实：那时没取过身份）');
     assert.equal(list[0].content, '你好世界');
     assert.equal(list[0].vid, 123);
     assert.equal(list[0].startTime, 1974);

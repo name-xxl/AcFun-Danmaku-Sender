@@ -12,6 +12,7 @@
     //   不在这里另写第二份（改口径只改那一处）；样式加在 boot.js 的 injectStyle 单点（前缀 #cf-ledger-panel）；
     //   浮层外壳复用 .cf-dev-panel-mask / .cf-dev-dlg / .cf-dev-foot（与 openExportDialog、#cf-dev-panel 同一范式）。
 
+import { IDENTITY_OTHER } from './10-constants.js';
 import { $, escapeHtml, status } from './20-utils.js';
 import {
     fmtStamp, ledgerByVideo, ledgerChecklistText, ledgerClear, ledgerList, ledgerStats,
@@ -23,9 +24,15 @@ import { downloadJson } from './90-preset-ui.js';
 
     // 清理引导（诚实版）：先说清「本工具删不掉」，再给手动路径与核对清单。
     // 「2 条/分钟」这类速率数字在这里**不写**——API.md 与 RISKS.md 都没有出处，速率限制未知。
+    // 6.16.0：这一组的记录若落在**他人的视频**上，先加一句——批量清理他人的作品更该先跟 UP 主说明。
     function guideText(video) {
         const id = String(video.vid == null ? '' : video.vid);
-        return '<b>本工具无法删除已发送的弹幕</b>：A 站没有提供删除接口（API.md §十一 列的弹幕接口里没有 delete，'
+        const otherCount = (video.entries || []).filter((e) => e.identity === IDENTITY_OTHER).length;
+        const ownNote = otherCount
+            ? '<b>⚠ 这 ' + otherCount + ' 条发在<b>他人的视频</b>上</b>：清理（或保留）之前建议先与 UP 主说明一下，'
+                + '别让 UP 主在自己作品下看到一批来路不明的弹幕。<br>'
+            : '';
+        return ownNote + '<b>本工具无法删除已发送的弹幕</b>：A 站没有提供删除接口（API.md §十一 列的弹幕接口里没有 delete，'
             + '§九 末亦记「预览残留无法按 id 删除」）。清理只能手动，路径是：'
             + '① 点上方 ac' + escapeHtml(id) + ' 的链接打开视频页 → ② 在画面上定位该条（下方清单给了时间/内容/danmakuId）'
             + '→ ③ 用 A 站的弹幕管理入口手动删除。<br>'
@@ -50,6 +57,9 @@ import { downloadJson } from './90-preset-ui.js';
     function videoBlock(group) {
         const box = document.createElement('div');
         box.className = 'cf-lg-video';
+        // 身份标记（6.16.0）：该视频的记录里有「发送时判定为他人视频」的 → 在分组头上打标。
+        // 一个分组 = 一个视频，身份通常一致；早期条目可能是 unknown（那时还没这功能），故按条数写。
+        const otherCount = group.entries.filter((e) => e.identity === IDENTITY_OTHER).length;
         const head = group.url
             ? '<a class="cf-lg-link" href="' + escapeHtml(group.url) + '" target="_blank" rel="noopener">ac'
                 + escapeHtml(String(group.vid)) + '</a>'
@@ -57,7 +67,9 @@ import { downloadJson } from './90-preset-ui.js';
         box.innerHTML = '<div class="cf-lg-head">'
             + head
             + '<span class="cf-lg-meta">' + group.count + ' 条 · 已确认 ' + group.verifiedCount
-            + ' · ' + escapeHtml(fmtStamp(group.firstAt)) + ' ~ ' + escapeHtml(fmtStamp(group.lastAt)) + '</span>'
+            + ' · ' + escapeHtml(fmtStamp(group.firstAt)) + ' ~ ' + escapeHtml(fmtStamp(group.lastAt))
+            + (otherCount ? ' · <b class="cf-lg-other">⚠ 他人的视频 ' + otherCount + '/' + group.count + ' 条</b>' : '')
+            + '</span>'
             + '<button type="button" class="cf-lg-btn" data-act="guide">🧹 清理引导</button>'
             + '</div>'
             + '<div class="cf-lg-guide" style="display:none"></div>'
