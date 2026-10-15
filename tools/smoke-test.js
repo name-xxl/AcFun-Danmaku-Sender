@@ -1,19 +1,45 @@
-// 冒烟测试：把 src 拼接后在 IIFE 作用域内注入测试代码，验证引擎/预设相关纯逻辑
+// 冒烟测试：验证引擎/预设/解析相关的纯逻辑（15 组）
 // 用法：node tools/smoke-test.js
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
+//
+// 6.8.0 迁移说明：原实现把 src 拼成单 IIFE、用正则在收口的 `})();` 前注入测试代码、在 vm 沙箱里跑。
+// ESM 化后（且 esbuild 打包还会再套一层 IIFE）该注入技巧失效——被注入的代码落到模块作用域之外，
+// 看不到任何模块内的名字。改为：
+//   ① 先在 globalThis 挂浏览器 API 桩（模块求值期会碰 window/document/localStorage）
+//   ② 再【动态】import 各模块——静态 import 会在挂桩之前求值，桩就白挂了
+//   ③ 把各模块导出收成一张名字表，用 new Function 把 TEST 体按名字展开执行
+import fs from 'fs';
+import path from 'path';
+import { pathToFileURL, fileURLToPath } from 'url';
 
-const ROOT = path.join(__dirname, '..');
-// FILES 单一来源：build.js（拼接顺序即依赖顺序）。此处解析引用，避免两份清单漂移。
-const FILES = (() => {
-    const m = fs.readFileSync(path.join(ROOT, 'build.js'), 'utf8').match(/const FILES = \[([\s\S]*?)\];/);
-    if (!m) throw new Error('无法从 build.js 解析 FILES 数组');
-    return m[1].split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean);
-})();
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const SRC = path.join(ROOT, 'src');
 
-let out = '';
-for (const f of FILES) out += fs.readFileSync(path.join(ROOT, 'src', f), 'utf8');
+// —— ① 浏览器 API 桩（必须在任何模块求值之前挂上）——
+const _store = new Map();
+globalThis.document = {
+    readyState: 'loading',     // 保持 loading：boot.js 只注册 addEventListener，init() 不会真的跑
+    addEventListener() {},
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    createElement() { return { style: {}, classList: { add() {}, remove() {}, toggle() {} }, appendChild() {}, setAttribute() {}, remove() {} }; },
+};
+globalThis.localStorage = {
+    getItem(k) { return _store.has(k) ? _store.get(k) : null; },
+    setItem(k, v) { _store.set(k, String(v)); },
+    removeItem(k) { _store.delete(k); },
+};
+globalThis.window = globalThis;
+globalThis.unsafeWindow = globalThis;
+
+// —— ② 动态 import 全部模块，收集导出 ——
+const BINDINGS = {};
+for (const f of fs.readdirSync(SRC).filter((x) => x.endsWith('.js')).sort()) {
+    const mod = await import(pathToFileURL(path.join(SRC, f)).href);
+    for (const [k, v] of Object.entries(mod)) {
+        if (k in BINDINGS) throw new Error('导出名跨模块冲突：' + k + '（见 ' + f + '）');
+        BINDINGS[k] = v;
+    }
+}
 
 const TEST = `
     const assert = (cond, msg) => { if (!cond) { console.error('FAIL: ' + msg); process.exitCode = 1; } };
@@ -322,22 +348,28 @@ const TEST = `
     })();
 `;
 
-out = out.replace(/\}\)\(\);\s*$/, TEST + '\n})();');
+// —— ③ 注入执行 ——
+// TEST 体沿用原「共享作用域」写法：它直接给 activePresetId / subs / cancelled / sendModel 这类
+// 模块状态赋值。ESM 下它们是模块私有绑定，单纯形参化之后「赋值」只会改到形参（模块纹丝不动）。
+// 故用 with(scope) 把这些名字以访问器暴露：读取模块当前值，写路由到对应 setter——
+// 与原单 IIFE 共享作用域的语义逐位一致，测试体因此无需改写。
+const scope = {};
+for (const [k, v] of Object.entries(BINDINGS)) {
+    const setter = 'set' + k[0].toUpperCase() + k.slice(1);
+    if (typeof BINDINGS[setter] === 'function') {
+        Object.defineProperty(scope, k, {
+            get: () => BINDINGS[k],
+            set: (x) => BINDINGS[setter](x),
+            enumerable: true,
+            configurable: true,
+        });
+    } else {
+        scope[k] = v;
+    }
+}
 
-const sandbox = {
-    console,
-    process,
-    document: {
-        readyState: 'loading',
-        addEventListener() {},
-        querySelector() { return null; },
-        querySelectorAll() { return []; },
-        createElement() { return { style: {}, classList: { add() {}, remove() {}, toggle() {} }, appendChild() {}, setAttribute() {}, remove() {} }; },
-    },
-    localStorage: { _m: {}, getItem(k) { return this._m[k] == null ? null : this._m[k]; }, setItem(k, v) { this._m[k] = String(v); }, removeItem(k) { delete this._m[k]; } },
-    setTimeout, clearTimeout, setInterval, clearInterval,
-};
-sandbox.window = sandbox;
-sandbox.unsafeWindow = sandbox;
-vm.createContext(sandbox);
-vm.runInContext(out, sandbox, { filename: 'bundle.js' });
+// new Function 体是宽松模式，with 可用（TEST 内部自己的 const/let 声明仍按块级作用域遮蔽同名属性）
+new Function('scope', 'with (scope) {\n' + TEST + '\n}')(scope);
+
+if (process.exitCode) console.error('\n冒烟测试未通过');
+else console.log('冒烟测试通过：' + Object.keys(BINDINGS).length + ' 个导出可寻址，' + Object.keys(scope).length + ' 个名字已注入');

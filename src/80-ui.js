@@ -8,6 +8,20 @@
     // 改我前读：面板先挂 body（display:none）再由 99-main 搬进原生面板壳——document 级查询依赖这个顺序；
     //   P3 我将被 gdm-panel 取代，别在我身上加新功能（RISKS R2 范围守门）。
 
+import { ANCHORS, DEFAULT_DURATION, DEFAULT_SHADOW_PLACEHOLDER, DEFAULT_SHINE_PLACEHOLDER, FONTS, FONT_LABELS, MAX_DURATION } from './10-constants.js';
+import { $, escapeHtml, fmt, rgbToHex, sleep, status } from './20-utils.js';
+import { parseSub } from './30-parser.js';
+import {
+    activePresetId, advancedConfig, bilingualMode, cancelled, currentStyleConfig, getVideoInfo,
+    listFolded, presetFolded, sendInterval, sending, setCancelled, setListFolded, setPresetFolded,
+    setSending, setSliceMode, setStyleFolded, setSubs, setTimeOffset, setTimeOffsetBackup, sliceMode,
+    storeSet, styleFolded, styleSource, subs, timeOffset, timeOffsetBackup,
+} from './40-core.js';
+import { calcDurationMs, cfgFor, expandSub, getAllPresets } from './50-engine.js';
+import { lastSentIds, sendDanmaku, setLastSentIds } from './60-network.js';
+import { expirePreviews, useOfflinePreview } from './70-preview.js';
+import { stopOfflinePreview } from './71-canvas-preview.js';
+
     let panelEl = null;          // 我们的面板根节点
     let isOurView = true;        // 当前显示的是我们的 UI 还是原生编辑器
     let panelMode = 'subtitle';  // 'subtitle' 字幕模式 | 'danmaku' 弹幕模式
@@ -138,7 +152,7 @@
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-all">▶ 预览全部</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-preview-pause">⏸ 暂停预览</button>
                 <button type="button" class="cf-btn cf-btn-b" id="cf-reset">↺ 重置</button>
-                <label class="cf-chk" title="勾选=自绘 Canvas 预览（不依赖 A 站渲染器）；取消=复用 A 站原生渲染器"><input type="checkbox" id="cf-offline-preview"${useOfflinePreview ? ' checked' : ''}> 离线预览</label>
+                <label class="cf-chk" title="取消=复用 A 站原生渲染器（默认，与彩排同一渲染器）；勾选=自绘 Canvas 预览（不依赖 A 站渲染器）"><input type="checkbox" id="cf-offline-preview"${useOfflinePreview ? ' checked' : ''}> 离线预览</label>
             </div>
             <div class="cf-actions-row">
                 <button type="button" class="cf-btn cf-btn-p" id="cf-send">▶ 发送全部</button>
@@ -240,12 +254,7 @@
         return panelEl;
     }
 
-    function status(msg, type) {
-        const e = $('#cf-status');
-        if (!e) return;
-        e.textContent = msg;
-        e.className = 'cf-status ' + (type || '');
-    }
+    // status（面板状态栏输出）6.8.0 起住 20-utils（依赖图无环要求，见该文件头注），此处不再重复。
 
     function renderList() {
         const w = $('#cf-list');
@@ -292,7 +301,7 @@
         const r = new FileReader();
         r.onload = () => {
             try {
-                subs = parseSub(r.result, file.name);
+                setSubs(parseSub(r.result, file.name));
                 if (!subs.length) throw new Error('未解析到字幕');
                 subs.forEach((s) => { s.st = ''; s.selected = true; });   // 默认全选
                 // 检测双语 LRC，有则显示处理方式下拉
@@ -330,8 +339,8 @@
         }
         if (!confirm(`发送 ${targets.length} 条字幕（展开 ${totalModels} 条弹幕）？\n发送后无法撤回。`)) { status('已取消'); return; }
 
-        sending = true; cancelled = false; setBtns(true);
-        lastSentIds = [];   // 清空上次批次的 danmakuId，验证只针对本次发送
+        setSending(true); setCancelled(false); setBtns(true);
+        setLastSentIds([]);   // 清空上次批次的 danmakuId，验证只针对本次发送
 
         for (let k = 0; k < targets.length; k++) {
             if (cancelled) break;
@@ -361,14 +370,14 @@
             if (!cancelled) await sleep(sendInterval);
         }
 
-        sending = false; setBtns(false);
+        setSending(false); setBtns(false);
         const ok = subs.filter((s) => s.st === 'ok').length;
         const fail = subs.filter((s) => s.st === 'err').length;
         if (!cancelled) status(`✅ 完成 · 成功 ${ok} 条${fail ? ` · 失败 ${fail} 条` : ''}`, 'ok');
     }
 
     function resetAll() {
-        if (sending) { cancelled = true; }
+        if (sending) { setCancelled(true); }
         subs.forEach((s) => (s.st = ''));
         stopOfflinePreview();   // 清除离线预览画布
         renderList(); setBtns(false);
@@ -377,10 +386,10 @@
 
     // 移除导入的字幕（清空列表）
     function removeSubs() {
-        if (sending) { cancelled = true; sending = false; }
+        if (sending) { setCancelled(true); setSending(false); }
         expirePreviews();
         stopOfflinePreview();   // 清除离线预览画布
-        subs = [];
+        setSubs([]);
         renderList(); setBtns(false);
         const uz = $('#cf-drop');
         if (uz) { uz.classList.remove('ok'); }
@@ -389,7 +398,7 @@
 
     // 折叠 / 展开字幕列表
     function toggleFold() {
-        listFolded = !listFolded;
+        setListFolded(!listFolded);
         const list = $('#cf-list');
         const btn = $('#cf-fold');
         if (list) list.style.display = listFolded ? 'none' : '';
@@ -398,7 +407,7 @@
 
     // 折叠 / 展开预设区
     function togglePresetFold() {
-        presetFolded = !presetFolded;
+        setPresetFolded(!presetFolded);
         const body = $('#cf-preset-body');
         const btn = $('#cf-fold-preset');
         if (body) body.style.display = presetFolded ? 'none' : '';
@@ -407,7 +416,7 @@
 
     // 折叠 / 展开样式区
     function toggleStyleFold() {
-        styleFolded = !styleFolded;
+        setStyleFolded(!styleFolded);
         const body = $('#cf-style-body');
         const btn = $('#cf-fold-style');
         if (body) body.style.display = styleFolded ? 'none' : '';
@@ -454,7 +463,7 @@
         if (!sliceMode) return;
         const first = subs.filter((s) => s.selected).sort((a, b) => a.time - b.time)[0];
         if (first) {
-            timeOffset = -Math.round(first.time);
+            setTimeOffset(-Math.round(first.time));
             storeSet('timeOffset', timeOffset);
             syncTimeOffsetInput();
             status(`🔪 切片模式：偏移已设为 -${fmt(first.time)}（首条 ${fmt(first.time)}）`, 'busy');
@@ -464,14 +473,24 @@
     // 切换切片模式
     function toggleSliceMode() {
         const chk = $('#cf-slice');
-        sliceMode = chk ? chk.checked : false;
+        setSliceMode(chk ? chk.checked : false);
         if (sliceMode) {
-            timeOffsetBackup = timeOffset;
+            setTimeOffsetBackup(timeOffset);
             applySliceOffset();
         } else {
-            timeOffset = timeOffsetBackup;
+            setTimeOffset(timeOffsetBackup);
             syncTimeOffsetInput();
             status('🔪 已退出切片模式，恢复手动偏移', 'ok');
         }
     }
 
+
+// —— ESM 导出（6.8.0 迁移）——
+export {
+    applySliceOffset, ensurePanel, getDefaultNative, isOurView, loadFile, panelMode, removeSubs,
+    resetAll, selectByRange, selectRange, setDefaultNative, startSend, toggleFold, togglePresetFold,
+    toggleSliceMode, toggleStyleFold, updateCnt,
+};
+// 跨文件写：ESM 导入绑定只读，故本文件的两个模块级 let 走 setter（声明留原地，初始化未改）
+export function setIsOurView(v) { isOurView = v; }
+export function setPanelMode(v) { panelMode = v; }

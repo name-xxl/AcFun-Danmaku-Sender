@@ -4,13 +4,25 @@
     // 理解卡｜我拥有：switchPanelMode（预设/样式区 DOM 在两模式间搬移复用）、makeManualSub 虚拟字幕、
     //   高级编辑全字段（TIMING_FUNCS 28 缓动 / readAdvancedConfig / renderMoves / exportAdvancedPreset）。
     // 我承诺：单条与批量走同一条 expandSub → sendModel 管线（单发不是特例路径）。
-    // 我永不：不碰批量/时间轴发送（80-ui 的 startSend 职责）；syncAdvEnableUI 是状态双源补丁（病灶②存量），
-    //   P3 要消灭这个模式而不是复制它。
+    // 我永不：不碰批量/时间轴发送（80-ui 的 startSend 职责）；syncAdvEnableUI 已迁 90-preset-ui
+    //   （状态双源补丁，病灶②存量；依赖图无环要求），P3 要消灭这个模式而不是复制它。
     // 改我前读：P3 我并入 gdm-panel 成「简单模式」；预设区/样式区 DOM 节点是两模式共享的，动布局先想另一半。
+
+import { DEFAULT_DURATION, DEFAULT_SHADOW_PLACEHOLDER, DEFAULT_SHINE_PLACEHOLDER, DEFAULT_ZINDEX, MAX_DURATION } from './10-constants.js';
+import { $, $$, fmt, status } from './20-utils.js';
+import {
+    ADJUSTABLE_FIELDS, DEFAULT_ADVANCED_CONFIG, advancedConfig, clamp, getPlayer, getVideoInfo, num,
+    setAdvancedConfig, timeOffset,
+} from './40-core.js';
+import { cfgFor, expandSub } from './50-engine.js';
+import { sendModel } from './60-network.js';
+import { previewSub } from './70-preview.js';
+import { panelMode, setPanelMode } from './80-ui.js';
+import { openExportDialog, syncAdvEnableUI } from './90-preset-ui.js';
 
     // 切换 字幕模式 / 弹幕模式（预设、样式区在两种模式间复用）
     function switchPanelMode(mode) {
-        panelMode = mode || (panelMode === 'subtitle' ? 'danmaku' : 'subtitle');
+        setPanelMode(mode || (panelMode === 'subtitle' ? 'danmaku' : 'subtitle'));
         const subBody = $('#cf-subtitle-body');
         const subAct = $('#cf-subtitle-actions');
         const dmBody = $('#cf-danmaku-body');
@@ -256,19 +268,6 @@
         advancedConfig.moves = moves.length ? moves : advancedConfig.moves;
     }
 
-    // 高级字段开关联动：投影/外发光/模糊，勾选启用时放开子输入，否则禁用并置空
-    // （对齐 A 站原生 isShadow/isShine/isBlur 语义）
-    function syncAdvEnableUI() {
-        // 激活预设带 effects 时，高级编辑整区由预设接管（syncEditorOwnedUI 已禁用），此处不覆盖
-        if (activePresetHasEffects()) return;
-        const shOn = (($('#cf-adv-sh-on') || {}).checked) === true;
-        const snOn = (($('#cf-adv-sn-on') || {}).checked) === true;
-        const blurOn = (($('#cf-adv-blur-on') || {}).checked) === true;
-        ['#cf-adv-shx', '#cf-adv-shy', '#cf-adv-shb', '#cf-adv-shc'].forEach((s) => { const e = $(s); if (e) e.disabled = !shOn; });
-        ['#cf-adv-snb', '#cf-adv-sns', '#cf-adv-snc'].forEach((s) => { const e = $(s); if (e) e.disabled = !snOn; });
-        const b = $('#cf-adv-blur'); if (b) b.disabled = !blurOn;
-    }
-
     // 旋转角度 → 圈数展示：|度|≤360 返回空（直接看度数），超过一圈显示「N圈M°」便于判断圈数
     function rotateLabel(deg) {
         const d = +deg;
@@ -346,7 +345,7 @@
 
     // 高级编辑「恢复默认」：重置 advancedConfig 为默认快照，并同步全部控件/开关/运动轨迹 UI
     function resetAdvancedConfig() {
-        advancedConfig = JSON.parse(JSON.stringify(DEFAULT_ADVANCED_CONFIG));
+        setAdvancedConfig(JSON.parse(JSON.stringify(DEFAULT_ADVANCED_CONFIG)));
         const setVal = (id, val) => { const e = $(id); if (e) e.value = val; };
         setVal('#cf-adv-zindex', advancedConfig.zIndex);
         setVal('#cf-adv-rx', advancedConfig.rotate.x);
@@ -480,3 +479,12 @@
         });
     }
 
+
+// —— ESM 导出（6.8.0 迁移）——
+export {
+    addMove, exportAdvancedPreset, parseManualTime, pickManualTime, previewManual,
+    readAdvancedConfig, renderMoves, resetAdvancedConfig, sendManual, switchPanelMode,
+    toggleAdvFold, updateManualCount,
+};
+// 仅供冒烟测试：不对其它 src 模块开放
+export { TIMING_FUNCS };

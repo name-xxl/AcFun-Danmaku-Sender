@@ -13,6 +13,12 @@
     // 改我前读：getPlayer 是宽松 duck-typing（跨 realm 不能 instanceof）；content 按码点截断 255；
     //   新增全局状态必须想清楚持久化键名（cf_sub_*），旧键 = 旧版迁移依据（RISKS R5）。
 
+import {
+    DEFAULT_ANCHOR, DEFAULT_MOVE_TIME, DEFAULT_POS_X, DEFAULT_POS_Y,
+    DEFAULT_SHADOW_PLACEHOLDER, DEFAULT_SHINE_PLACEHOLDER, DEFAULT_ZINDEX, FONTS,
+} from './10-constants.js';
+import { genId, rgbToHex } from './20-utils.js';
+
     const pageWin = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
 
     function getPlayer() {
@@ -297,4 +303,35 @@
     // num：把 n 归一成数值，null/undefined/空串/NaN 等无效值回落到默认 d。
     // 注意 null/'' 必须在 +n 之前判断（+null=0、+''=0 都会误判成合法值）。
     function num(n, d) { if (n === null || n === undefined || n === '') return d; n = +n; return isFinite(n) ? n : d; }
+
+// —— ESM 导出（6.8.0 迁移）——
+// 读：他文件 import { x }（ESM 活绑定，读到的永远是最新值）。
+// 写：ESM 导入绑定只读，跨文件赋值一律走 setter（声明留原地、初始化一字未改）。
+//   setSendModel 以外的 setter 对应真实跨文件赋值点（80-ui/85/90/95/70/boot）；
+//   测试专用替身 setter 在各自 owner 里另行导出（50-engine 的 setExpandSub、60-network 的 setSendModel），
+//   生产代码不调用它们。
+export {
+    ADJUSTABLE_FIELDS, DEFAULT_ADVANCED_CONFIG, activePresetId, advancedConfig,
+    applySavedOptions, bilingualMode, buildAnimationFrames, buildModel, cancelled,
+    clamp, currentStyleConfig, customPresets, getPlayer, getVideoInfo, listFolded,
+    num, persistCustomPresets, playVideo, pauseVideo, presetFolded, previewPaused,
+    savePresetOptions, seekTo, sendInterval, sending, sliceMode, storeGet, storeSet,
+    styleFolded, styleSource, subs, subs2, timeOffset, timeOffsetBackup,
+};
+export function setActivePresetId(v) { activePresetId = v; }
+export function setAdvancedConfig(v) { advancedConfig = v; }
+export function setBilingualMode(v) { bilingualMode = v; }
+export function setCancelled(v) { cancelled = v; }
+export function setListFolded(v) { listFolded = v; }
+export function setPresetFolded(v) { presetFolded = v; }
+export function setPreviewPaused(v) { previewPaused = v; }
+export function setSendInterval(v) { sendInterval = v; }
+export function setSending(v) { sending = v; }
+export function setSliceMode(v) { sliceMode = v; }
+export function setStyleFolded(v) { styleFolded = v; }
+export function setStyleSource(v) { styleSource = v; }
+export function setSubs(v) { subs = v; }
+export function setSubs2(v) { subs2 = v; }
+export function setTimeOffset(v) { timeOffset = v; }
+export function setTimeOffsetBackup(v) { timeOffsetBackup = v; }
 

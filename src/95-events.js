@@ -6,6 +6,30 @@
     // 我永不：不在绑定回调里写长段业务逻辑（调度回 80/85/90 的函数）。
     // 改我前读：新增控件必须同步此处，漏绑 = 静默无反应（无报错）；P3 随组件函数走，本文件将被消灭。
 
+import { $, $$, hexToRgb, status } from './20-utils.js';
+import {
+    advancedConfig, bilingualMode, clamp, currentStyleConfig, getPlayer, pauseVideo, playVideo,
+    previewPaused, sendInterval, setBilingualMode, setPreviewPaused, setSendInterval, setSliceMode,
+    setStyleSource, setTimeOffset, sliceMode, storeSet, styleSource, subs, timeOffset,
+} from './40-core.js';
+import { verifySent } from './60-network.js';
+import { previewAll, previewSub, setUseOfflinePreview, useOfflinePreview } from './70-preview.js';
+import { stopOfflinePreview } from './71-canvas-preview.js';
+import {
+    applySliceOffset, ensurePanel, loadFile, removeSubs, resetAll, selectByRange, selectRange,
+    startSend, toggleFold, togglePresetFold, toggleSliceMode, toggleStyleFold, updateCnt,
+} from './80-ui.js';
+import {
+    addMove, exportAdvancedPreset, parseManualTime, pickManualTime, previewManual,
+    readAdvancedConfig, renderMoves, resetAdvancedConfig, sendManual, switchPanelMode,
+    toggleAdvFold, updateManualCount,
+} from './85-danmaku.js';
+import {
+    deleteCurrentPreset, exportAllPresets, exportCurrentPreset, importPreset, loadPresetFile,
+    loadSub2File, onPresetChange, openDevPanel, restoreActivePresetOptions, saveActivePresetOptions,
+    syncAdvEnableUI, updatePresetUI,
+} from './90-preset-ui.js';
+
     function bindEvents() {
         const p = ensurePanel();
         const file = $('#cf-file'), drop = $('#cf-drop');
@@ -23,15 +47,15 @@
         $('#cf-reset').addEventListener('click', resetAll);
         $('#cf-preview-all').addEventListener('click', previewAll);
         $('#cf-offline-preview').addEventListener('change', (e) => {
-            useOfflinePreview = e.target.checked;
+            setUseOfflinePreview(e.target.checked);
             if (!useOfflinePreview) stopOfflinePreview();   // 切回在线预览时停掉离线画布，避免双重画面
-            status(`预览方式：${useOfflinePreview ? '离线 Canvas 自绘' : '在线 A 站渲染器'}`, 'ok');
+            status(`预览方式：${useOfflinePreview ? '离线 Canvas 自绘' : '在线 A 站渲染器（页面需留在前台才会上屏）'}`, 'ok');
         });
         $('#cf-preview-pause').addEventListener('click', () => {
             const p = getPlayer();
             if (!p) return;
-            if (previewPaused) { previewPaused = false; playVideo(); status('▶ 预览继续', 'busy'); }
-            else { previewPaused = true; pauseVideo(); status('⏸ 预览已暂停', 'busy'); }
+            if (previewPaused) { setPreviewPaused(false); playVideo(); status('▶ 预览继续', 'busy'); }
+            else { setPreviewPaused(true); pauseVideo(); status('⏸ 预览已暂停', 'busy'); }
         });
         $('#cf-remove').addEventListener('click', removeSubs);
         $('#cf-toggle-danmaku').addEventListener('click', () => switchPanelMode());
@@ -85,12 +109,12 @@
         $('#cf-restore-preset').addEventListener('click', restoreActivePresetOptions);
         updatePresetUI();
         $('#cf-interval').addEventListener('change', (e) => {
-            sendInterval = Math.max(0, Math.round(+e.target.value || 0));
+            setSendInterval(Math.max(0, Math.round(+e.target.value || 0)));
             storeSet('sendInterval', sendInterval);
             status(`发送间隔已设为 ${sendInterval} ms`, 'ok');
         });
 
-        $('#cf-style-source').addEventListener('change', (e) => { styleSource = e.target.value; storeSet('styleSource', styleSource); });
+        $('#cf-style-source').addEventListener('change', (e) => { setStyleSource(e.target.value); storeSet('styleSource', styleSource); });
 
         $('#cf-font').addEventListener('change', (e) => (currentStyleConfig.font = e.target.value));
         $('#cf-size').addEventListener('change', (e) => (currentStyleConfig.size = clamp(e.target.value, 12, 150)));
@@ -105,9 +129,9 @@
             if (sliceMode) {
                 const chk = $('#cf-slice');
                 if (chk) chk.checked = false;
-                sliceMode = false;
+                setSliceMode(false);
             }
-            timeOffset = Math.round(+e.target.value || 0);
+            setTimeOffset(Math.round(+e.target.value || 0));
             storeSet('timeOffset', timeOffset);
         });
 
@@ -120,7 +144,7 @@
 
         // 双语 LRC 处理方式
         $('#cf-bilingual-mode').addEventListener('change', (e) => {
-            bilingualMode = e.target.value;
+            setBilingualMode(e.target.value);
             storeSet('bilingualMode', bilingualMode);
             status(`双语处理：${e.target.value === 'auto' ? '自动上下两行' : (e.target.value === 'main' ? '仅主语言' : '仅副语言')}`, 'ok');
         });
@@ -142,3 +166,6 @@
         });
     }
 
+
+// —— ESM 导出（6.8.0 迁移）——
+export { bindEvents };

@@ -10,6 +10,15 @@
     // 改我前读：expandSub 的 seq/prevTime 是跨句衔接（KTV 双排/applySeqOffset）的生命线，别删；
     //   timingFunction 只认 CSS 合法值（API.md §九，非法值 = 弹幕停在 (0,0)）；smoke #12–14 钉住大量行为，改引擎先跑门。
 
+import {
+    BUILTIN_PRESETS, DEFAULT_DURATION, DEFAULT_POS_X, DEFAULT_POS_Y, KTV_SUNG_COLOR, KTV_UNSUNG_COLOR,
+} from './10-constants.js';
+import { getByPath, hexToRgb, log, rgbToHex } from './20-utils.js';
+import {
+    activePresetId, advancedConfig, applySavedOptions, bilingualMode, buildModel, clamp,
+    currentStyleConfig, customPresets, num, styleSource, subs, subs2,
+} from './40-core.js';
+
     function getAllPresets() { return BUILTIN_PRESETS.concat(customPresets); }
     function getActivePreset() {
         return getAllPresets().find((p) => p.id === activePresetId) || BUILTIN_PRESETS[0];
@@ -704,3 +713,13 @@
         return cfg;
     }
 
+
+// —— ESM 导出（6.8.0 迁移：跨文件引用经 import 收口，build.js 的 FILES 拼接已废除）——
+export {
+    COMPOSITIONS, ENGINES, STAGES, activePresetHasEffects, calcDurationMs, cfgFor, expandSub,
+    getActivePreset, getAllPresets, initPresets, isCharSplitComposition,
+};
+// 仅供冒烟测试（smoke #12–14 钉引擎行为）：不对其它 src 模块开放
+export { PIPELINE_HOOKS, applyBaseAdvance, applySeqOffset };
+// 仅供冒烟测试（#15 探针给 expandSub 装替身）：不对其它 src 模块开放
+export function setExpandSub(fn) { expandSub = fn; }

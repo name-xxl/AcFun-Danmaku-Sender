@@ -85,6 +85,14 @@
     // model 构造（对齐 buildModel / API.md §五渲染端只读字段）
     function mk(o) {
         return Object.assign({
+            // contentType / startTimeNow：buildModel 与 API.md §五 都有的字段，2026-10-15 实测证明【必须有】。
+            // 缺这两个字段时，渲染器仍会建节点、仍会生成 @keyframes，但**永远停在缓冲**：
+            // data-is-buffer=true + class danmaku-g-invisible + visibility:hidden，文字节点不创建，
+            // 画面上什么都看不到，且**不报任何错**。
+            // 这正是本工具此前「注入无异常但看不见」的根因 —— 也是 P2 的 T4 一直挂着「待上屏确认」、
+            // 而 T1/T3/T5 只能靠坐标/keyframes 数学推断的原因。修后 T4 实测通过（见 API.md §十二）。
+            contentType: 0,          // 0 = 文本 Text
+            startTimeNow: false,
             content: '', startTime: 0, durationTime: 3000, zIndex: 1, anchor: 4,
             wordStyle: { font: 'SimHei', size: 24, bold: true, color: '#ffffff', stroke: { size: 2, color: '#000000' } },
             animationFrames: null, rotate: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },

@@ -42,8 +42,11 @@
 ## 构建与安装
 
 ```bash
-node build.js              # 无 npm 依赖，产出 dist/acfun-adl.user.js
-node tools/smoke-test.js   # 冒烟测试
+npm i                      # 首次：装构建期依赖（esbuild，仅构建用，不影响产物）
+npm run build              # 产出 dist/acfun-adl.user.js
+npm run check              # 门禁：版本一致 / 禁模式守门 / 引用完整性 / 依赖图（环+可达性）
+npm run test               # 冒烟测试（15 组）
+npm run gate               # build → check → test 一键串联
 ```
 
 1. 安装浏览器扩展 [Tampermonkey](https://www.tampermonkey.net/)；

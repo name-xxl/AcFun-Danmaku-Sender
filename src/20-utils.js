@@ -1,10 +1,11 @@
     // ============================================================
     //  工具
     // ============================================================
-    // 理解卡｜我拥有：log/sleep/getByPath/setByPath/t2ms/ass2ms 等零依赖工具函数。
-    // 我承诺：纯函数、无状态、无 DOM 依赖（log 只向 console 输出）。
-    // 我永不：不引用其他 src 模块的东西（我是最底层）。
-    // 改我前读：拼接顺序 = 依赖顺序，我被所有模块使用，签名变更影响面是全仓。
+    // 理解卡｜我拥有：log/sleep/getByPath/setByPath/t2ms/ass2ms 等零依赖工具函数、status（面板状态栏单行输出）。
+    // 我承诺：纯函数、无状态（status 只向既有 #cf-status 节点写文本，是 80-ui 面板的显示出口，非业务状态）。
+    // 我永不：不发网络请求；status 不做 DOM 构造（节点不存在即静默返回）。
+    // 改我前读：拼接顺序 = 依赖顺序，我被所有模块使用，签名变更影响面是全仓；
+    //   status 归我而非 80-ui，是为了断 60/70/90 → 80 的反向边（依赖图无环，check-deps 环检测要求）。
 
     const log = (...args) => console.log('%c[弹幕字幕]', 'color:#8b5cf6;font-weight:bold;', ...args);
 
@@ -78,4 +79,20 @@
     function fmt(ms) {
         return `${p2(ms / 36e5 | 0)}:${p2(ms % 36e5 / 6e4 | 0)}:${p2(ms % 6e4 / 1e3 | 0)}.${String(ms % 1e3).padStart(3, '0')}`;
     }
+
+    // 面板状态栏输出（#cf-status 由 80-ui ensurePanel 建）。节点不在（未建面板）即静默返回。
+    // 6.8.0 迁入：原住 80-ui，因 60/70/90 都依赖它形成 60/70↔80 静态环；
+    // 归入本文件（仅依赖 $）后环断开，运行行为零变化（单 IIFE 内同一函数）。
+    function status(msg, type) {
+        const e = $('#cf-status');
+        if (!e) return;
+        e.textContent = msg;
+        e.className = 'cf-status ' + (type || '');
+    }
+
+// —— ESM 导出（6.8.0 迁移：跨文件引用经 import 收口；$ / $$ / sleep / paramTarget / status 均被他文件使用）——
+export {
+    $, $$, ass2ms, escapeHtml, fmt, genId, getByPath, hexToRgb, log,
+    paramTarget, p2, rgbToHex, setByPath, sleep, status, t2ms,
+};
 

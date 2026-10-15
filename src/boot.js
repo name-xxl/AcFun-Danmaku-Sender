@@ -6,7 +6,13 @@
     // 我承诺：switchView 切换时显隐原生 navs/content（寄生替换式——P3 改为浮层共存，行为变更已立项）。
     // 我永不：setInterval 白名单 1/1（P3 清零换 MutationObserver）；新样式只进 injectStyle 单点。
     // 改我前读：面板注入依赖 .danmaku-g-launcher-panel 存在（原生面板壳）；SCRIPT_VERSION 读 GM_info；
-    //   文件末尾的 `})();` 收口整个 IIFE——拼接顺序变动会直接语法错误。
+    //   6.8.0 起 IIFE 外壳由 build.js 的 banner/footer 提供，本文件不再是收口点（原 `})();` 已删）。
+
+import { $, log, status } from './20-utils.js';
+import { getPlayer } from './40-core.js';
+import { initPresets } from './50-engine.js';
+import { ensurePanel, getDefaultNative, isOurView, setDefaultNative, setIsOurView } from './80-ui.js';
+import { bindEvents } from './95-events.js';
 
     function getNativePanel() { return $('.danmaku-g-launcher-panel'); }
 
@@ -18,7 +24,7 @@
 
     // 切换视图：保留原生标题栏，只替换标题栏下方的区域
     function switchView(toOur) {
-        isOurView = toOur;
+        setIsOurView(toOur);
         const native = getNativePanel();
         if (!native) return;
         const our = ensurePanel();
@@ -273,4 +279,3 @@
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
     else init();
-})();

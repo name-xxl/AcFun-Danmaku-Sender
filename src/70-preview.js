@@ -1,7 +1,7 @@
     // ============================================================
     //  预览（复用原生高级弹幕渲染器）
     // ============================================================
-    // 理解卡｜我拥有：previewSub/previewAll/previewMulti 双模式预览调度（默认离线 Canvas，可切 A 站渲染器）
+    // 理解卡｜我拥有：previewSub/previewAll/previewMulti 双模式预览调度（默认 A 站官方渲染器，可切离线 Canvas）
     //   + 在线注入的全部 hack。
     // 我承诺：在线预览四件套——ensureRenderer（.danmaku-g-rendered-stage 探测 + initAdvancedDanmaku 兜底）、
     //   __seq 绕内容指纹去重、user=uid 过 IsOwnDanmkau 过滤器、pause→seek(-400ms)→等600ms→loadDanmakuG→play 时序；
@@ -10,13 +10,22 @@
     // 改我前读：P2 spike 就是把这套 hack 拿到真实页面验证口径，spike 若挂这里是第一现场；
     //   「短视频句尾字被 timeFrame 过滤」的等待时序是实测踩出来的坑，别当成可优化项删掉。
 
+import { $, log, sleep, status } from './20-utils.js';
+import { getPlayer, pauseVideo, playVideo, previewPaused, seekTo, setPreviewPaused, subs, timeOffset } from './40-core.js';
+import { calcDurationMs, cfgFor, expandSub } from './50-engine.js';
+import { getUid } from './60-network.js';
+import { startOfflinePreview, stopOfflinePreview } from './71-canvas-preview.js';
+
     // 预览弹幕走 loadDanmakuG → addDanmaku，会进入正式弹幕池且无法按 id 删除。
     // 因此记录每次预览的 model 引用，预览前把旧预览“过期”（startTime 设为极大值），
     // 让它不再落在任何播放时间窗口内，避免残留/重复渲染。
     let previewRefs = [];
     let previewSeq = 0;
     // 预览方式：默认走 Canvas 自绘（离线预览），可切回 A 站渲染器（在线预览）
-    let useOfflinePreview = true;
+    // 预览方式：默认走 A 站官方渲染器（与彩排同一个渲染器，P2 spike 已实证通过，见 API.md §十二），
+    // 可切回自绘 Canvas。6.9.0 起默认值由 true 翻为 false —— **只翻默认**，
+    // 离线 Canvas 与这个开关一行未删（双路径去留待 P3 面板重写时按「哪条真在用」裁决）。
+    let useOfflinePreview = false;
 
     function expirePreviews() {
         for (const m of previewRefs) {
@@ -132,7 +141,7 @@
             startOfflinePreview(models);
             const p = getPlayer();
             if (p) { seekTo(Math.max(0, selected[0].time + timeOffset - 400)); playVideo(); }
-            previewPaused = false;
+            setPreviewPaused(false);
             status(`▶ 预览全部：${selected.length} 条字幕 → ${models.length} 条弹幕`, 'busy');
             return;
         }
@@ -160,7 +169,7 @@
         // 时序修复（同 previewSub）：先暂停 → seek 到首条之前留余量 → 注入全部 → play。
         pauseVideo();
         seekTo(Math.max(0, selected[0].time + timeOffset - 400));
-        previewPaused = false;
+        setPreviewPaused(false);
         // 等渲染器时间同步（同 previewSub 的时序修复）
         setTimeout(() => {
             try {
@@ -236,3 +245,8 @@
         });
     }
 
+
+// —— ESM 导出（6.8.0 迁移）——
+export { expirePreviews, previewAll, previewMulti, previewSub, useOfflinePreview };
+// 跨文件写：ESM 导入绑定只读，95-events 切预览方式走此 setter（声明留原地，初始化未改）
+export function setUseOfflinePreview(v) { useOfflinePreview = v; }

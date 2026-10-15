@@ -1,12 +1,32 @@
     // ============================================================
     //  预设 UI 逻辑
     // ============================================================
-    // 理解卡｜我拥有：buildParamControl（参数控件生成器——schema 化的现有雏形，支持 select/color/checkbox/text/number）、
-    //   预设导入/导出/删除、开发面板全套（草稿持久化/预览/保存为预设）。
+    // 理解卡｜我拥有：预设导入/导出/删除/导入校验（sanitizePresetParams）、两处参数区渲染
+    //   （renderPresetParams 预设区 / renderDevParams 开发面板）、开发面板全套（草稿持久化/预览/保存为预设）。
     // 我承诺：导入校验只提醒不阻断（smoke #2 钉住）；导出不泄露内部字段（_origOptions 等，smoke #8）。
     // 我永不：confirm( 白名单 3 处我占 2（删除预设/重置开发面板）；新增交互一律走内联确认，不再加 confirm。
-    // 改我前读：全仓最大模块（793 行）；P3 我被 schema 生成器 + store 范式取代（参照 svfeed settingspanel），
-    //   但 buildParamControl（尤其 color 类型）是迁移资产，别推倒重写。
+    // 改我前读：参数控件 DOM 的唯一出口已抽到 gdm-form.js（6.10.0，buildParamControl 连同 {node,sync} 契约与
+    //   订阅注册表一并迁出）——本文件只负责「按声明装配容器 + 追加自己的行类名 + 传 get/set/onChange」；
+    //   两处渲染重建容器前都要 clearParamSubscriptions，别让上一轮的订阅活过重建。
+    //   P3 本模块被 schema 生成器 + store 范式取代（参照 svfeed settingspanel）。
+
+import { BUILTIN_PRESETS, DEFAULT_PRESET_OPTIONS } from './10-constants.js';
+import { $, escapeHtml, genId, getByPath, paramTarget, setByPath, status } from './20-utils.js';
+import { parseSub } from './30-parser.js';
+import {
+    activePresetId, buildModel, customPresets, getPlayer, persistCustomPresets, savePresetOptions,
+    setActivePresetId, setSubs2, storeGet, storeSet, subs, subs2,
+} from './40-core.js';
+import {
+    COMPOSITIONS, ENGINES, STAGES, activePresetHasEffects, calcDurationMs, getActivePreset,
+    getAllPresets, isCharSplitComposition,
+} from './50-engine.js';
+import { getAcfunAuthor } from './60-network.js';
+import { previewMulti } from './70-preview.js';
+import {
+    activeCompositionOf, activeEngineParamKeys, buildParamControl, clearParamSubscriptions,
+    filterOptionsByKeys, subscribeToParams, validateComposition,
+} from './gdm-form.js';
 
     function refreshPresetSelect() {
         const sel = $('#cf-preset');
@@ -97,6 +117,21 @@
         return TRANSFORM_OWNS[preset.transform] || [];
     }
 
+    // 高级字段开关联动：投影/外发光/模糊，勾选启用时放开子输入，否则禁用并置空
+    // （对齐 A 站原生 isShadow/isShine/isBlur 语义）
+    // 6.8.0 迁入：原住 85-danmaku，因 90↔85 互相引用形成静态环；归入本文件（紧邻唯一调用方
+    // syncEditorOwnedUI）后环断开，运行行为零变化。是状态双源补丁（病灶②存量），P3 消灭而非复制。
+    function syncAdvEnableUI() {
+        // 激活预设带 effects 时，高级编辑整区由预设接管（syncEditorOwnedUI 已禁用），此处不覆盖
+        if (activePresetHasEffects()) return;
+        const shOn = (($('#cf-adv-sh-on') || {}).checked) === true;
+        const snOn = (($('#cf-adv-sn-on') || {}).checked) === true;
+        const blurOn = (($('#cf-adv-blur-on') || {}).checked) === true;
+        ['#cf-adv-shx', '#cf-adv-shy', '#cf-adv-shb', '#cf-adv-shc'].forEach((s) => { const e = $(s); if (e) e.disabled = !shOn; });
+        ['#cf-adv-snb', '#cf-adv-sns', '#cf-adv-snc'].forEach((s) => { const e = $(s); if (e) e.disabled = !snOn; });
+        const b = $('#cf-adv-blur'); if (b) b.disabled = !blurOn;
+    }
+
     // 根据当前预设的 owns 同步编辑器：被接管的字段禁用（灰 + 提示），其余启用。
     function syncEditorOwnedUI() {
         const preset = getActivePreset();
@@ -161,63 +196,7 @@
         status(`↩ 已恢复「${preset.name}」默认参数`, 'ok');
     }
 
-    // 参数控件构造器（预设参数面板与效果开发面板共用）：
-    //   param   —— 参数声明 { key,label,type,choices?,min?,max?,step?,default?,placeholder? }
-    //   get     —— 读当前值；set —— 写回值；onChange —— 变化后回调（color 用 input 事件连续触发，不回调）
-    function buildParamControl(param, get, set, onChange) {
-        const row = document.createElement('div');
-        row.className = 'cf-row';
-        const label = document.createElement('label');
-        label.textContent = param.label || param.key;
-        row.appendChild(label);
-
-        const raw = get();
-        const val = (raw !== undefined && raw !== null) ? raw : param.default;
-        let input;
-        if (param.type === 'select') {
-            input = document.createElement('select');
-            (param.choices || []).forEach((c) => {
-                const o = document.createElement('option');
-                o.value = c.value; o.textContent = c.label;
-                if (String(val) === String(c.value)) o.selected = true;
-                input.appendChild(o);
-            });
-            input.addEventListener('change', () => { set(input.value); if (onChange) onChange(input.value); });
-        } else if (param.type === 'color') {
-            input = document.createElement('input');
-            input.type = 'color';
-            input.value = /^#[0-9a-fA-F]{6}$/.test(String(val)) ? val : '#ffffff';
-            input.addEventListener('input', () => set(input.value));
-        } else if (param.type === 'checkbox') {
-            input = document.createElement('input');
-            input.type = 'checkbox';
-            input.checked = !!val;
-            input.addEventListener('change', () => { set(input.checked); if (onChange) onChange(input.checked); });
-        } else if (param.type === 'text') {
-            input = document.createElement('input');
-            input.type = 'text';
-            input.placeholder = param.placeholder || '';
-            input.value = (val !== undefined && val !== null) ? val : '';
-            input.addEventListener('change', () => { set(input.value); if (onChange) onChange(input.value); });
-        } else { // number 及其他默认按 number 处理
-            input = document.createElement('input');
-            input.type = 'number';
-            if (param.min !== undefined) input.min = param.min;
-            if (param.max !== undefined) input.max = param.max;
-            if (param.step !== undefined) input.step = param.step;
-            input.value = (val === undefined || val === null) ? '' : val;
-            input.addEventListener('change', () => {
-                let v = parseFloat(input.value);
-                if (isNaN(v)) v = (param.default !== undefined ? param.default : 0);
-                set(v);
-                if (onChange) onChange(v);
-            });
-        }
-        row.appendChild(input);
-        return row;
-    }
-
-    // 按激活预设的 params 声明，动态生成参数编辑控件。
+    // 按激活预设的 params 声明，动态生成参数编辑控件（控件本身由 gdm-form.buildParamControl 产出）。
     // 支持 param.group 字段：同组参数聚在一起，组间显示分组标题，
     // 让开发者能通过 JSON 控制面板的分组与顺序，参数多了也不乱。
     function renderPresetParams() {
@@ -225,6 +204,8 @@
         if (!box) return;
         const preset = getActivePreset();
         const params = (preset && preset.params) || [];
+        // 重建即退订：上一轮控件的 sync 订阅不跨轮存活（gdm-form 的订阅纪律）
+        clearParamSubscriptions(box);
         box.innerHTML = '';
         if (!params.length) { box.style.display = 'none'; return; }
         box.style.display = '';
@@ -232,12 +213,13 @@
         function makeRow(param) {
             // 直接定位 preset.options / preset.effects 的真实字段，读写都落到本体
             const target = paramTarget(preset, param.key);
-            const row = buildParamControl(param,
+            const { node, sync } = buildParamControl(param,
                 () => getByPath(target.root, target.path),
                 (v) => setByPath(target.root, target.path, v),
                 (v) => status(`已调整「${param.label}」= ${v}（未保存）`, 'busy'));
-            row.classList.add('cf-preset-param-row');
-            return row;
+            subscribeToParams(sync, box);
+            node.classList.add('cf-preset-param-row');
+            return node;
         }
 
         // 按 group 分组渲染（保持 params 里 group 首次出现的顺序）
@@ -264,7 +246,7 @@
 
     function onPresetChange() {
         const sel = $('#cf-preset');
-        activePresetId = sel ? sel.value : 'none';
+        setActivePresetId(sel ? sel.value : 'none');
         // 激活预设带 effects 时，批量发送复用这些高级字段
         const preset = getActivePreset();
         updatePresetUI();
@@ -394,25 +376,9 @@
         // 清理该预设保存过的参数
         try { localStorage.removeItem('cf_sub_presetOpt_' + p.id); } catch (e) {}
         persistCustomPresets();
-        activePresetId = 'none';
+        setActivePresetId('none');
         refreshPresetSelect();
         status(`🗑 已删除「${p.name}」`, 'ok');
-    }
-
-    // 校验 composition（效果开发面板创作的引擎组合）：每个阶段的引擎名必须在 ENGINES 里存在
-    function validateComposition(comp) {
-        if (!comp || typeof comp !== 'object') return false;
-        return STAGES.every((s) => {
-            const name = comp[s.key];
-            return name != null && ENGINES[s.key] && ENGINES[s.key][name];
-        });
-    }
-
-    // 预设的激活引擎组合：composition 优先，旧 transform 字段折算成 composition（none 则无）
-    function activeCompositionOf(p) {
-        if (p.composition) return p.composition;
-        if (p.transform && COMPOSITIONS[p.transform]) return COMPOSITIONS[p.transform];
-        return null;
     }
 
     // 导入时的参数校验：剔除无 key / 重复 key 的项，提醒 type 拼错、
@@ -639,36 +605,20 @@
             descEl.textContent = d ? 'ⓘ' : '';
             descEl.title = d;
         }
+        // 重建即退订：本阶段框上一轮的 sync 订阅不跨轮存活（按容器退订，不牵连其余阶段框）
+        clearParamSubscriptions(box);
         box.innerHTML = '';
         if (!engine.params.length) { box.style.display = 'none'; return; }
         box.style.display = '';
         engine.params.forEach((param) => {
-            const row = buildParamControl(param,
+            // 开发面板继续不传 onChange：这些控件只改草稿，不刷状态栏
+            const { node, sync } = buildParamControl(param,
                 () => getByPath(devDraft.options, param.key),
                 (v) => { setByPath(devDraft.options, param.key, v); persistDevDraft(); });
-            row.classList.add('cf-dev-param-row');
-            box.appendChild(row);
+            subscribeToParams(sync, box);
+            node.classList.add('cf-dev-param-row');
+            box.appendChild(node);
         });
-    }
-
-    // 激活引擎组合声明过的参数 key 列表（含 dot 路径），供残留值过滤与导入校验共用
-    function activeEngineParamKeys(comp) {
-        const keys = [];
-        STAGES.forEach((s) => {
-            const eng = ENGINES[s.key] && ENGINES[s.key][comp[s.key]];
-            if (eng && eng.params) eng.params.forEach((p) => { if (p && p.key) keys.push(p.key); });
-        });
-        return keys;
-    }
-
-    // 只保留 keys 声明过的参数（含父路径，如 'step' 保留给 'step.x'），
-    // 避免切换引擎时残留的旧值被带进导出 JSON / 草稿还原
-    function filterOptionsByKeys(options, keys) {
-        const out = {};
-        Object.keys(options || {}).forEach((k) => {
-            if (keys.some((ak) => ak === k || ak.indexOf(k + '.') === 0)) out[k] = options[k];
-        });
-        return out;
     }
 
     function collectDevDraft() {
@@ -745,10 +695,10 @@
         const tempId = '__dev_preview__';
         customPresets.push({ id: tempId, name: '预览', desc: '', transform: 'none', composition: draft.composition, options: draft.options, params: [] });
         const oldId = activePresetId;
-        activePresetId = tempId;
+        setActivePresetId(tempId);
         syncEditorOwnedUI();
         previewMulti(subList, GAP).then(() => {
-            activePresetId = oldId;
+            setActivePresetId(oldId);
             const i = customPresets.findIndex((p) => p.id === tempId);
             if (i >= 0) customPresets.splice(i, 1);
             syncEditorOwnedUI();
@@ -771,7 +721,7 @@
         openExportDialog(preset, (p, close) => {
             customPresets.push(p);
             persistCustomPresets();
-            activePresetId = p.id;
+            setActivePresetId(p.id);
             refreshPresetSelect();
             downloadJson('预设-' + p.name.replace(/[\\/:*?"<>|]/g, '_') + '.json', presetsToExport([p])[0]);
             status(`💾 已保存并导出「${p.name}」`, 'ok');
@@ -784,12 +734,12 @@
         const r = new FileReader();
         r.onload = () => {
             try {
-                subs2 = parseSub(r.result, file.name);
+                setSubs2(parseSub(r.result, file.name));
                 if (!subs2.length) throw new Error('未解析到第二语言字幕');
                 $('#cf-sub2-hint').textContent = `${file.name} · ${subs2.length} 条`;
                 status(`✅ 第二语言字幕已加载：${subs2.length} 条`, 'ok');
             } catch (e) {
-                subs2 = [];
+                setSubs2([]);
                 $('#cf-sub2-hint').textContent = '未上传';
                 status('第二语言字幕解析失败: ' + e.message, 'err');
             }
@@ -797,3 +747,15 @@
         r.readAsText(file, 'utf-8');
     }
 
+
+// —— ESM 导出（6.8.0 迁移）——
+export {
+    deleteCurrentPreset, exportAllPresets, exportCurrentPreset, importPreset, loadPresetFile,
+    loadSub2File, onPresetChange, openDevPanel, openExportDialog, restoreActivePresetOptions,
+    saveActivePresetOptions, syncAdvEnableUI, updatePresetUI,
+};
+// 仅供冒烟测试（smoke #1–8 预设校验/导出/草稿还原）：不对其它 src 模块开放
+// （activeEngineParamKeys / filterOptionsByKeys 6.10.0 随 gdm-form 迁出，冒烟测试改从该模块取）
+export {
+    TRANSFORM_OWNS, loadSavedDevDraft, ownsForComposition, presetsToExport, sanitizePresetParams,
+};

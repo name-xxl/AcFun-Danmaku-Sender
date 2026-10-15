@@ -9,6 +9,11 @@
     // 改我前读：verifySent 复刻播放器 pollByPosition 20 秒窗口全片扫描（new-danmaku/list 不返回高级弹幕）；
     //   uid 在 cookie 的 auth_key（字符串，严格相等比较）；错误码 128019–128024 有人话映射。
 
+import { MODEL_SEND_INTERVAL } from './10-constants.js';
+import { log, sleep, status } from './20-utils.js';
+import { cancelled, getPlayer, getVideoInfo, subs } from './40-core.js';
+import { calcDurationMs, expandSub } from './50-engine.js';
+
     function gmPost(url, data) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -209,3 +214,10 @@
         return uid ? 'uid:' + uid : '';
     }
 
+
+// —— ESM 导出（6.8.0 迁移）——
+export { getAcfunAuthor, getUid, lastSentIds, sendDanmaku, sendModel, verifySent };
+// 跨文件写：ESM 导入绑定只读，80-ui 发起新批次时清空 lastSentIds 走此 setter（声明留原地，初始化未改）
+export function setLastSentIds(v) { lastSentIds = v; }
+// 仅供冒烟测试（#15 探针给发送循环装替身）：不对其它 src 模块开放
+export function setSendModel(fn) { sendModel = fn; }

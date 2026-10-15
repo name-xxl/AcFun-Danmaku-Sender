@@ -8,6 +8,9 @@
     // 改我前读：我独立于 A 站渲染器但不独立于播放器——必须挂在真实 <video> 上跟播放时钟；
     //   RISKS R1 若成立（spike 失败）我升主预览（P3），届时能力缺口（外发光等）需补。
 
+import { $, p2 } from './20-utils.js';
+import { buildModel, getPlayer } from './40-core.js';
+
     // 缓动进度：timingFunction → 归一化进度。
     // 支持 CSS 关键字（linear/ease-*）与 cubic-bezier(x1,y1,x2,y2) 字符串；
     // 未知值一律回落 linear。
@@ -225,3 +228,8 @@
             offlineCtx.clearRect(0, 0, offlineCanvas.width, offlineCanvas.height);
         }
     }
+
+// —— ESM 导出（6.8.0 迁移）——
+export { startOfflinePreview, stopOfflinePreview };
+// 仅供冒烟测试（smoke #14.5 缓动精度对拍）：不对其它 src 模块开放
+export { cubicBezierXY, easeProgress, interpolateModel };
