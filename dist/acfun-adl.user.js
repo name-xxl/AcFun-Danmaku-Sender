@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AcFun 高级弹幕层编辑器 (ADL)
 // @namespace    https://github.com/acfun-danmaku-sender
-// @version      6.12.0
+// @version      6.13.1
 // @description  视频的高级弹幕层编辑器：给视频加一条可发布的字幕/特效轨道，所见即所得，发送只是导出。导入 SRT/ASS/LRC，预设特效，彩排通过才可导出。
 // @author       name_xxl
 // @match        *://www.acfun.cn/v/ac*
@@ -501,6 +501,68 @@
     });
     return out;
   });
+  function normalizeFont(f) {
+    return FONTS.includes(f) ? f : f === "KaiTi" || f === "FangSong" ? "FangSong" : "SimHei";
+  }
+  function clamp(n, lo, hi) {
+    n = +n || 0;
+    return n < lo ? lo : n > hi ? hi : n;
+  }
+  function num(n, d) {
+    if (n === null || n === void 0 || n === "") return d;
+    n = +n;
+    return isFinite(n) ? n : d;
+  }
+  function setActivePresetId(v) {
+    activePresetId = v;
+  }
+  function setAdvancedConfig(v) {
+    advancedConfig = v;
+  }
+  function setBilingualMode(v) {
+    bilingualMode = v;
+  }
+  function setCancelled(v) {
+    cancelled = v;
+  }
+  function setListFolded(v) {
+    listFolded = v;
+  }
+  function setPresetFolded(v) {
+    presetFolded = v;
+  }
+  function setPreviewPaused(v) {
+    previewPaused = v;
+  }
+  function setSendInterval(v) {
+    sendInterval = v;
+  }
+  function setSending(v) {
+    sending = v;
+  }
+  function setSliceMode(v) {
+    sliceMode = v;
+  }
+  function setStyleFolded(v) {
+    styleFolded = v;
+  }
+  function setStyleSource(v) {
+    styleSource = v;
+  }
+  function setSubs(v) {
+    subs = v;
+  }
+  function setSubs2(v) {
+    subs2 = v;
+  }
+  function setTimeOffset(v) {
+    timeOffset = v;
+  }
+  function setTimeOffsetBackup(v) {
+    timeOffsetBackup = v;
+  }
+
+  // src/gdm-model.js
   function normalizeEffects(ef) {
     const src = ef || {};
     return {
@@ -587,66 +649,6 @@
       rotate: { x: num(adv.rotate.x, 0), y: num(adv.rotate.y, 0), z: num(adv.rotate.z, 0) },
       scale: { x: num(adv.scale.x, 1), y: num(adv.scale.y, 1), z: num(adv.scale.z, 1) }
     };
-  }
-  function normalizeFont(f) {
-    return FONTS.includes(f) ? f : f === "KaiTi" || f === "FangSong" ? "FangSong" : "SimHei";
-  }
-  function clamp(n, lo, hi) {
-    n = +n || 0;
-    return n < lo ? lo : n > hi ? hi : n;
-  }
-  function num(n, d) {
-    if (n === null || n === void 0 || n === "") return d;
-    n = +n;
-    return isFinite(n) ? n : d;
-  }
-  function setActivePresetId(v) {
-    activePresetId = v;
-  }
-  function setAdvancedConfig(v) {
-    advancedConfig = v;
-  }
-  function setBilingualMode(v) {
-    bilingualMode = v;
-  }
-  function setCancelled(v) {
-    cancelled = v;
-  }
-  function setListFolded(v) {
-    listFolded = v;
-  }
-  function setPresetFolded(v) {
-    presetFolded = v;
-  }
-  function setPreviewPaused(v) {
-    previewPaused = v;
-  }
-  function setSendInterval(v) {
-    sendInterval = v;
-  }
-  function setSending(v) {
-    sending = v;
-  }
-  function setSliceMode(v) {
-    sliceMode = v;
-  }
-  function setStyleFolded(v) {
-    styleFolded = v;
-  }
-  function setStyleSource(v) {
-    styleSource = v;
-  }
-  function setSubs(v) {
-    subs = v;
-  }
-  function setSubs2(v) {
-    subs2 = v;
-  }
-  function setTimeOffset(v) {
-    timeOffset = v;
-  }
-  function setTimeOffsetBackup(v) {
-    timeOffsetBackup = v;
   }
 
   // src/50-engine.js

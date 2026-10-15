@@ -6,19 +6,18 @@
     // ============================================================
     // 理解卡｜我拥有：播放器封装（getPlayer/seekTo/playVideo…，unsafeWindow 沙箱桥）、全局可变状态
     //   （subs/styleSource/timeOffset/advancedConfig…）、localStorage 存取（storeGet/storeSet，键前缀 cf_sub_）、
-    //   buildModel（构造与 A 站原生 getData 完全一致的 model）、ADJUSTABLE_FIELDS（可调字段表——
-    //   6.12.0 起由 35-adv-fields 的统一声明派生，本文件只做投影，不改内容）。
-    // 我承诺：buildModel 的字段集 = API.md §五 渲染端只读字段；全局状态的声明入口集中在此。
-    // 我永不：不发网络请求（60-network 的职责）；buildModel 不补 hack 字段（__seq/user 是 70-preview 的
-    //   预览期补丁，正式发送的 model 不带）。
-    // 改我前读：getPlayer 是宽松 duck-typing（跨 realm 不能 instanceof）；content 按码点截断 255；
-    //   新增全局状态必须想清楚持久化键名（cf_sub_*），旧键 = 旧版迁移依据（RISKS R5）。
+    //   ADJUSTABLE_FIELDS（可调字段表——6.12.0 起由 35-adv-fields 的统一声明派生，本文件只做投影，不改内容）。
+    // 我承诺：全局状态的声明入口集中在此（读经 ESM 活绑定、写经 setter）；num/clamp/normalizeFont 等
+    //   朴素工具留在本文件（被多层引用），模型构造层从本文件 import 它们。
+    // 我永不：不发网络请求（60-network 的职责）；不持有模型构造（6.13.0 起 buildModel / buildAnimationFrames /
+    //   normalizeEffects 归 gdm-model.js——**本文件不 re-export 它们**，那会立刻成环，tools/check-deps.mjs 报红）。
+    // 改我前读：getPlayer 是宽松 duck-typing（跨 realm 不能 instanceof）；timeOffset / advancedConfig 是
+    //   gdm-model.buildModel 的活绑定来源，改语义前先看那边；新增全局状态必须想清楚持久化键名（cf_sub_*），
+    //   旧键 = 旧版迁移依据（RISKS R5）。
 
 import {
-    DEFAULT_ANCHOR, DEFAULT_MOVE_TIME, DEFAULT_POS_X, DEFAULT_POS_Y,
-    DEFAULT_SHADOW_PLACEHOLDER, DEFAULT_SHINE_PLACEHOLDER, DEFAULT_ZINDEX, FONTS,
+    DEFAULT_ANCHOR, DEFAULT_MOVE_TIME, DEFAULT_POS_X, DEFAULT_POS_Y, DEFAULT_ZINDEX, FONTS,
 } from './10-constants.js';
-import { genId, rgbToHex } from './20-utils.js';
 import { ADV_FIELDS } from './35-adv-fields.js';
 
     const pageWin = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
@@ -190,105 +189,8 @@ import { ADV_FIELDS } from './35-adv-fields.js';
         return out;
     });
 
-    // 规范化 effects：补齐缺失字段，保证 buildModel 访问安全。
-    // （moves 已收编进 motion 阶段引擎，不再作为 effects 字段）
-    function normalizeEffects(ef) {
-        const src = ef || {};
-        return {
-            zIndex: (src.zIndex != null) ? src.zIndex : DEFAULT_ZINDEX,
-            rotate: { x: num(src.rotate && src.rotate.x, 0), y: num(src.rotate && src.rotate.y, 0), z: num(src.rotate && src.rotate.z, 0) },
-            scale: { x: num(src.scale && src.scale.x, 1), y: num(src.scale && src.scale.y, 1), z: 1 },
-            blur: num(src.blur, 0),
-            shine: src.shine || null,
-            shadow: src.shadow || null,
-        };
-    }
-
-    // ============================================================
-    //  模型构造（与 A 站原生 getData 完全一致）
-    // ============================================================
-
-    // 把 moves（多段运动轨迹）转成 animationFrames（A 站动画帧）。纯函数。
-    // 坐标 null → 回落 cfg.posX/posY（跟随样式区/预设定位）；
-    // 帧级 scale/rotate null → 回落 adv.scale/adv.rotate（顶层拉伸旋转）；
-    // moveTime 空 → 回落 durationMs。
-    function buildAnimationFrames(moves, cfg, adv, durationMs) {
-        const baseMoveTime = Math.max(100, Math.round(durationMs || cfg.moveTime || DEFAULT_MOVE_TIME));
-        const list = (moves && moves.length) ? moves : [{ fromX: null, fromY: null, toX: null, toY: null, moveTime: null, timingFunction: 'linear' }];
-        return list.map((mv) => {
-            const frame = (sx, sy, rx, ry, rz, px, py) => ({
-                pos: { x: px, y: py, z: 1 },
-                scale: { x: num(sx, adv.scale.x), y: num(sy, adv.scale.y), z: 1 },
-                rotate: { x: num(rx, adv.rotate.x), y: num(ry, adv.rotate.y), z: num(rz, adv.rotate.z) },
-            });
-            return {
-                from: frame(mv.fromScaleX, mv.fromScaleY, mv.fromRotateX, mv.fromRotateY, mv.fromRotateZ,
-                    num(mv.fromX, num(cfg.posX, DEFAULT_POS_X)), num(mv.fromY, num(cfg.posY, DEFAULT_POS_Y))),
-                to: frame(mv.toScaleX, mv.toScaleY, mv.toRotateX, mv.toRotateY, mv.toRotateZ,
-                    num(mv.toX, num(cfg.posX, DEFAULT_POS_X)), num(mv.toY, num(cfg.posY, DEFAULT_POS_Y))),
-                timingFunction: mv.timingFunction || 'linear',
-                staticTime: 0,
-                moveTime: Math.max(100, Math.round(num(mv.moveTime, baseMoveTime))),
-            };
-        });
-    }
-
-    function buildModel(sub, cfg, durationMs, effects, moves) {
-        const text = Array.from((sub.text || '').trim()).slice(0, 255).join('');
-        // 起始时间 = 字幕时间 + 全局时间偏移（ms，可为负，用于微调同步）
-        const startTime = Math.max(0, Math.round(sub.time + timeOffset));
-        // 运动耗时由相邻字幕间隔自动计算，durationMs 兜底
-        const moveTime = Math.max(100, Math.round(durationMs || cfg.moveTime || DEFAULT_MOVE_TIME));
-
-        const wordStyle = {
-            font: normalizeFont(cfg.font),
-            size: clamp(cfg.size, 12, 150),
-            bold: !!cfg.bold,
-            stroke: cfg.stroke !== false,
-            color: rgbToHex(cfg.color),
-        };
-        const adv = normalizeEffects(effects || advancedConfig);
-
-        // 简单投影（旧字段，向后兼容）：未在高级字段里配置投影时才启用
-        if (cfg.shadow && !adv.shadow) {
-            wordStyle.shadow = {
-                x: DEFAULT_SHADOW_PLACEHOLDER.x,
-                y: DEFAULT_SHADOW_PLACEHOLDER.y,
-                color: DEFAULT_SHADOW_PLACEHOLDER.color,
-                blur: DEFAULT_SHADOW_PLACEHOLDER.blur,
-            };
-        }
-
-        // 高级字段：模糊 / 外发光 / 投影（覆盖简单投影）
-        if (adv.blur > 0) wordStyle.blur = adv.blur;
-        if (adv.shine) wordStyle.shine = { color: adv.shine.color, blur: adv.shine.blur, size: adv.shine.size };
-        if (adv.shadow) wordStyle.shadow = { x: adv.shadow.x, y: adv.shadow.y, color: adv.shadow.color, blur: adv.shadow.blur };
-
-        // 多段运动：坐标 null 时回落到 cfg.posX/posY（跟随样式区/预设定位），
-        // 显式数字才用固定坐标。这样竖排/KTV/声明式等 transform 通过 cfg 传递的
-        // 位置才能真正生效，而不是被默认 50,85 固定运动钉死在同一点。
-        // moves 来源：motion 引擎写入的 l.moves（null=静止）；仅当「未传 moves」（无预设直发路径）
-        // 才回落弹幕模式手动运动 advancedConfig.moves，避免字幕模式预设与弹幕模式共享运动状态。
-        const ms = (moves === undefined) ? advancedConfig.moves : moves;
-        const animationFrames = buildAnimationFrames(ms, cfg, adv, durationMs);
-        // 总时长 = 所有段 moveTime 之和
-        const totalDur = animationFrames.reduce((a, f) => a + f.moveTime, 0);
-
-        return {
-            id: genId(),
-            content: text,
-            contentType: 0,                    // Text
-            startTime: startTime,
-            startTimeNow: false,
-            zIndex: clamp(adv.zIndex, 1, 99),
-            anchor: clamp(cfg.anchor, 0, 8),
-            wordStyle: wordStyle,
-            animationFrames: animationFrames,
-            durationTime: totalDur || moveTime,
-            rotate: { x: num(adv.rotate.x, 0), y: num(adv.rotate.y, 0), z: num(adv.rotate.z, 0) },
-            scale: { x: num(adv.scale.x, 1), y: num(adv.scale.y, 1), z: num(adv.scale.z, 1) },
-        };
-    }
+    // 模型构造（normalizeEffects / buildAnimationFrames / buildModel）已抽到 gdm-model.js
+    // （6.13.0）。本文件保留它依赖的朴素工具：下面的 normalizeFont / clamp / num。
 
     function normalizeFont(f) {
         return FONTS.includes(f) ? f : (f === 'KaiTi' || f === 'FangSong' ? 'FangSong' : 'SimHei');
@@ -306,11 +208,11 @@ import { ADV_FIELDS } from './35-adv-fields.js';
 //   生产代码不调用它们。
 export {
     ADJUSTABLE_FIELDS, DEFAULT_ADVANCED_CONFIG, activePresetId, advancedConfig,
-    applySavedOptions, bilingualMode, buildAnimationFrames, buildModel, cancelled,
-    clamp, currentStyleConfig, customPresets, getPlayer, getVideoInfo, listFolded,
-    num, persistCustomPresets, playVideo, pauseVideo, presetFolded, previewPaused,
-    savePresetOptions, seekTo, sendInterval, sending, sliceMode, storeGet, storeSet,
-    styleFolded, styleSource, subs, subs2, timeOffset, timeOffsetBackup,
+    applySavedOptions, bilingualMode, cancelled, clamp, currentStyleConfig, customPresets,
+    getPlayer, getVideoInfo, listFolded, normalizeFont, num, persistCustomPresets, playVideo,
+    pauseVideo, presetFolded, previewPaused, savePresetOptions, seekTo, sendInterval, sending,
+    sliceMode, storeGet, storeSet, styleFolded, styleSource, subs, subs2, timeOffset,
+    timeOffsetBackup,
 };
 export function setActivePresetId(v) { activePresetId = v; }
 export function setAdvancedConfig(v) { advancedConfig = v; }

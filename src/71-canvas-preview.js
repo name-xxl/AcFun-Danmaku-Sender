@@ -9,7 +9,8 @@
     //   RISKS R1 若成立（spike 失败）我升主预览（P3），届时能力缺口（外发光等）需补。
 
 import { $, p2 } from './20-utils.js';
-import { buildModel, getPlayer } from './40-core.js';
+import { getPlayer } from './40-core.js';
+import { buildModel } from './gdm-model.js';
 
     // 缓动进度：timingFunction → 归一化进度。
     // 支持 CSS 关键字（linear/ease-*）与 cubic-bezier(x1,y1,x2,y2) 字符串；

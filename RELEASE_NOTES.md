@@ -1,3 +1,90 @@
+## 更新内容（6.13.1）
+
+**行为变更：lint 的坐标判据放宽 + 补上一条「我们自己的产出必须过 lint」的不变量测试。
+6.13.0 的 `frame-pos-range` 是错的——它会把所有 `motion.slide` 弹幕判成病灶。**
+
+- **原判据错在哪**：6.13.0 把帧坐标判成「必须落在 0–100 百分比」，依据取的是 §五「x/y 为屏幕百分比」
+  与 §十二 T3/T5 的像素换算实测。但 §五/§十二 说的是**坐标系**（百分比，不是 0–1 相对坐标），
+  **从没说过合法取值必须落在 0–100**——屏幕外坐标是**技法**：
+  - `motion.slide`（`50-engine`）就是拿屏幕外起点滑入：`w = min(90, max(10, 文本长×4))`、出屏余量 `M = 5`、
+    按锚点列取 `off[col]`。从右 `col=2` → `100 + w + M = 195`（上限），从左 `col=0` → `-(w + M) = -95`（下限）。
+    **即「必须 0–100」等于把所有 slide 弹幕拦死。**
+  - 也不止 slide：`karaoke` 预设的横向布局，120 字一句把 x 推到 `341.2`（`charWidth 2.8 × 120 + startX 8`）。
+  - 实测：全场景（3 预设 × 6 motion 引擎 × 6 样例）产出坐标范围 **[-95, 341.2]**。
+- **新判据：量级检查 ±1000**（约屏幕宽度的 10 倍），依据一并写进 `gdm-model.js` 头注：
+  ① slide 的极值 [-95, 195] 留了约 5 倍余量；② 用户手填坐标本也出不去——运动轨迹列表的控件是
+  `min="0" max="100"`；③ 这条要抓的是**量级错误**（像素当百分比传、100 写成 10000 → 屏幕外几百倍，
+  弹幕永远看不见），不是「越界」。边界单钉：±1000 通过、±1001 拦。
+- **补上缺的那条测试（本轮最重要的产出）**：`test/unit/model-lint.test.mjs` 新增**不变量**——
+  3 个内置预设 × 6 个 motion 引擎（none/advanced/bounce/pop/spin/slide）× 6 例文本（单字 / 20 字 /
+  SRT 多行 / 中英混排 / emoji / 120 字）→ **42 个预设/引擎组合、252 次 `expandSub` 调用**，
+  走真实入口 `expandSub` 产出模型后逐条 lint：**7098 条 model，不通过 0 条**。
+  slide 单独拆成 4 个方向 × 2 个锚点列（col 0/2），把 -95 与 195 两个极端都打到。
+  **根因**：6.13.0 的 23 条判据测试全绿却没发现误杀，因为它们只问「我写坏的它抓不抓得到」，
+  **没有任何一条在跑我们自己的产出**。这条补的就是它——今后任何判据只要开始误杀自己的产出，
+  立刻红灯，并给出「预设/引擎 × 样例 → rule@path」的定位（改判据，而不是改测试）。
+- **空文本样例单列一条测试**（不进不变量）：lint 应报且**只报** `content-empty`（§二 body），
+  同时就地取证空文本到不了模型层——`parseSub` 丢弃空文本条目（SRT/LRC 都实测过），
+  弹幕模式在发送前用 status 拦（`85-danmaku`「请输入弹幕内容」）。
+- **变异验证**：把边界改回 `0–100` → 不变量测试立刻红灯，报「不通过 **5100/7098** 条」并逐条定位，
+  例如 `预设 none × motion slide(left, anchor=0) × 样例「单字」→ frame-pos-range@model.animationFrames[0].from.pos.x`、
+  `预设 karaoke × 样例「120 字」174/240 条不通过`、`预设 vertical × motion slide(left, anchor=0) 167/167 条不通过`；
+  还原后 26/26 全绿。
+- **RISKS R10（slide 误杀面）新增并关闭**：守卫就是上面这条不变量测试。
+- 单测 97 条 → **100 条**；lint 仍未接进导出流程（闸② 的 UI 落点不在本片）。
+
+## 更新内容（6.13.0）
+
+**行为变更：无。`src/gdm-model.js` 抽出模型构造层（零行为变更的搬迁），并落上「闸② 输出 lint」的纯函数 `lintModel()`。**
+
+- **新增 `src/gdm-model.js`（模型构造层）**：`normalizeEffects` / `buildAnimationFrames` / `buildModel` **整段搬入、
+  函数体逐字未改**（对拍：`git show HEAD:src/40-core.js` 里这三段 vs 现文件归一化后逐行相等）。
+  三者原本的依赖全部显式化：`DEFAULT_MOVE_TIME`/`DEFAULT_POS_X`/`DEFAULT_POS_Y`/`DEFAULT_SHADOW_PLACEHOLDER`/
+  `DEFAULT_ZINDEX` 来自 `10-constants`、`genId`/`rgbToHex` 来自 `20-utils`、`num`/`clamp`/`normalizeFont` 来自
+  `40-core`；**`timeOffset`（`startTime` 用）与 `advancedConfig`（`moves === undefined` 时的回落）保持
+  import 活绑定读取，没有改成传参**（那会波及所有调用点，是行为风险）
+- **`40-core.js` 不 re-export 这三个名字**（`gdm-model → 40-core` 已有边，再 re-export 立刻成环，
+  `tools/check-deps.mjs` 报红）；消费者 `50-engine` / `71-canvas-preview` / `90-preset-ui` 改为
+  `import { buildModel } from './gdm-model.js'`。`40-core` 新增导出 `normalizeFont`（原本是本文件私有的
+  朴素工具，模型层现在要读它），并从 `10-constants`/`20-utils` 的 import 里撤掉只有模型层才用的
+  `DEFAULT_SHADOW_PLACEHOLDER` / `genId` / `rgbToHex`。`40-core` **自身不调用**这三个函数（搬迁可行的前提）
+- **新增 `lintModel(model)` → `{ ok, problems: [{ rule, detail, path }] }`**（纯函数：不写 model、不抛错、
+  不引 DOM）。判据全部从 API.md 取证，逐条带出处：
+  | rule | 判据 | 出处 |
+  |---|---|---|
+  | `field-missing` / `field-type` | 12 个必填字段齐备 + 类型 | §五 顶层结构与字段表 |
+  | `id-format` | 40 位 hex | §五 |
+  | `content-empty` / `content-too-long` | 非空、≤ 255 **码点**（与 `buildModel` 的 `Array.from(...).slice(0,255)` 同口径） | §二 body |
+  | `content-type-value` | ∈ {0,1} | §五 / §六 |
+  | `z-index-range` | ∈ [1,99] | §五 |
+  | `anchor-range` | ∈ 0~8 整数 | §五 / §六 九宫格 |
+  | `duration-time` | > 0（非正数 → 入池窗口恒空，静默不渲染） | §五 / §十二 附录 #2 |
+  | `frames-empty` | 帧列表非空 | §五 / §十二 T1 |
+  | `frame-shape` / `frame-number` | 两端 pos/scale/rotate 三组三轴齐备且为有限数 | §五 运动帧表 |
+  | `frame-pos-range` | 坐标 ∈ 0–100 **百分比**（不是 0–1 相对坐标——那是错的口径） | §五 / §十二 T3、T5 实测 |
+  | `frame-move-time` | ≥ 100ms | `buildAnimationFrames` 的 `Math.max(100, …)`（代码口径，API.md 未定下限） |
+  | `timing-function` | CSS 合法缓动：§六 四关键字 + 格式合法的 `cubic-bezier`（x ∈ [0,1]，y 不限） | §六（非法值 = 弹幕停在 (0,0)） |
+- **保守放行（有疑但 API.md 无据 → 只不拦，误杀比漏放更伤）**：帧 `staticTime` 缺失或为负、帧里
+  `pos.z`/`scale.z` 非 1、`wordStyle.font` 不在 §六 那 5 种、`wordStyle.color` 不是 `#rrggbb` 写法、
+  `startTime` 为负；缓动白名单额外收下 CSS 合法但 §六 未列的 `ease` / `step-*` / `steps(...)`——
+  **`85-danmaku` 的 `TIMING_FUNCS`（28 项）是子集，不是白名单**（测试钉住 28 项全过）
+- **已知误杀面，接闸② UI 前必须处理**：`motion` 引擎的 slide 用屏幕外起点坐标滑入/滑出
+  （`50-engine` 的 `-15` / `110`，见 smoke #14.9、#14.11），会被 `frame-pos-range` 拦下——那是「走到台前」
+  的有效坐标，不是病灶。**实测（一次性探针，不进仓）**：`vertical` 预设 20 字（20 条 model）、`karaoke` 预设
+  20 字（40 条）、`bounce` 运动引擎**全部零告警**；只有 `slide` 的 `from.pos.x=110` 必报。
+  本片只落纯函数与判据、**不接导出流程**，故先记在这里
+- **新增单测 `test/unit/model-lint.test.mjs`（23 条）**：坏夹具逐条被抓（缺 `contentType` / 缺 `startTimeNow` /
+  坐标 101 与 −1 / 负时长与 0 / `timingFunction: 'wobble'` 与 `quadEaseIn` / 空 content 与全空白 /
+  256 码点 / `zIndex: 0` 与 100 / `anchor: 9` 与 4.5 / `contentType: 2` / 坏 id / 帧结构缺项 / 帧数值非数 /
+  `moveTime: 99` / 空帧列表 / 空对象 12 条 `field-missing`），rule 与 path 可辨识；合法夹具零告警且取
+  `buildModel`/`buildAnimationFrames` 的**真实产出**；边界值单钉（0 与 100 坐标、`zIndex` 1 与 99、
+  `moveTime` 100、255 个 emoji 合法而 256 个不合法）；纯函数两条（不改 model、坏输入不抛错）。
+  单测 74 条 → 97 条
+- **产物里没有 `lintModel` 是正常的**：现在还没有调用点，esbuild 把未被引用的导出摇掉了
+  （接线后才进产物）；`function buildModel` / `function buildAnimationFrames` 在产物里各 **1 份**（无重复副本）
+- **未验证边界**：没有真浏览器验证——lint 判据是文档 + 代码口径的静态落地，`frame-pos-range` 的
+  误杀面（上条）就是文档口径与引擎实际用法之间的真实缝隙；闸② 的 UI 落点、压缩均不在本片
+
 ## 更新内容（6.12.0）
 
 **行为变更：弹幕模式「高级编辑」区的 17 个控件改由声明生成，`ADJUSTABLE_FIELDS` 并入同一份声明。**

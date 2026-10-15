@@ -14,9 +14,10 @@ import { BUILTIN_PRESETS, DEFAULT_PRESET_OPTIONS } from './10-constants.js';
 import { $, escapeHtml, genId, getByPath, paramTarget, setByPath, status } from './20-utils.js';
 import { parseSub } from './30-parser.js';
 import {
-    activePresetId, buildModel, customPresets, getPlayer, persistCustomPresets, savePresetOptions,
+    activePresetId, customPresets, getPlayer, persistCustomPresets, savePresetOptions,
     setActivePresetId, setSubs2, storeGet, storeSet, subs, subs2,
 } from './40-core.js';
+import { buildModel } from './gdm-model.js';
 import {
     COMPOSITIONS, ENGINES, STAGES, activePresetHasEffects, calcDurationMs, getActivePreset,
     getAllPresets, isCharSplitComposition,

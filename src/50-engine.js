@@ -15,9 +15,10 @@ import {
 } from './10-constants.js';
 import { getByPath, hexToRgb, log, rgbToHex } from './20-utils.js';
 import {
-    activePresetId, advancedConfig, applySavedOptions, bilingualMode, buildModel, clamp,
+    activePresetId, advancedConfig, applySavedOptions, bilingualMode, clamp,
     currentStyleConfig, customPresets, num, styleSource, subs, subs2,
 } from './40-core.js';
+import { buildModel } from './gdm-model.js';
 
     function getAllPresets() { return BUILTIN_PRESETS.concat(customPresets); }
     function getActivePreset() {
