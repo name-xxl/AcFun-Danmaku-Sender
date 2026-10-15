@@ -1,6 +1,6 @@
 {
   "name": "acfun-adl",
-  "version": "6.15.0",
+  "version": "6.15.1",
   "description": "视频的高级弹幕层编辑器——给视频加一条可发布的字幕/特效轨道，所见即所得，发送只是导出",
   "type": "module",
   "scripts": {
